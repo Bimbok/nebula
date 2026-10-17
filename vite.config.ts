@@ -289,12 +289,13 @@ function streamProxyPlugin() {
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Transfer-Encoding', 'chunked');
 
-        // Extract subtitles without mapping video/audio so demuxer streams WebVTT cleanly
+        // Extract subtitles: -headers must be immediately before -i in newer FFmpeg
         const ffmpeg = spawn('ffmpeg', [
-          '-headers', headersParam,
+          '-loglevel', 'error',
           '-reconnect', '1',
           '-reconnect_streamed', '1',
           '-reconnect_delay_max', '5',
+          '-headers', headersParam,
           '-i', driveUrl,
           '-map', `0:${streamIndex}`,
           '-c:s', 'webvtt',
@@ -312,10 +313,7 @@ function streamProxyPlugin() {
         });
 
         ffmpeg.stderr.on('data', (d) => {
-          const str = d.toString();
-          if (!str.includes('frame=') && !str.includes('speed=')) {
-            console.warn('[ffmpeg-sub stderr]', str.trim());
-          }
+          console.warn('[ffmpeg-sub]', d.toString().trim());
         });
 
         ffmpeg.on('close', (code) => {
@@ -551,29 +549,31 @@ function streamProxyPlugin() {
         res.setHeader('Access-Control-Allow-Headers', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
 
+        // A/V Sync fix:
+        // -ss before -i: fast seek to nearest keyframe before startTime
+        // -headers directly before -i: FFmpeg v9 requires this ordering
+        // -avoid_negative_ts make_zero: normalizes all output timestamps to start at 0
+        //   so browser video.currentTime = 0 at seek point, preventing A/V drift
+        // -fflags +genpts: regenerate PTS from DTS for clean monotonic timestamps
         const ffmpegArgs = [
-          '-headers', headersParam,
+          '-loglevel', 'error',
           '-reconnect', '1',
           '-reconnect_streamed', '1',
           '-reconnect_delay_max', '5',
-        ];
-
-        if (startTime > 0) {
-          ffmpegArgs.push('-noaccurate_seek', '-ss', startTime.toString());
-        }
-
-        ffmpegArgs.push(
+          '-ss', startTime.toString(),
+          '-headers', headersParam,
           '-i', driveUrl,
           '-map', '0:v:0',
           '-map', `0:a:${audioIndex}`,
           '-c:v', 'copy',
           '-c:a', 'aac',
           '-b:a', '320k',
-          '-af', 'aresample=async=1:first_pts=0',
+          '-avoid_negative_ts', 'make_zero',
+          '-fflags', '+genpts',
           '-f', 'mp4',
           '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-          'pipe:1'
-        );
+          'pipe:1',
+        ];
 
         const ffmpeg = spawn('ffmpeg', ffmpegArgs);
         ffmpeg.stdout.pipe(res);

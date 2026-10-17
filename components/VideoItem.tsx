@@ -7,8 +7,8 @@ interface VideoItemProps {
 }
 
 const PlayIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
-    <path d="M8 5v14l11-7z" />
+  <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+    <path d="M8 5.14v14c0 .86.94 1.39 1.67.94l11-7c.72-.45.72-1.5 0-1.95l-11-7c-.73-.45-1.67.08-1.67.95z" />
   </svg>
 );
 
@@ -31,7 +31,7 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
           observer.disconnect();
         }
       },
-      { rootMargin: '300px' } // Pre-load when within 300px of viewport
+      { rootMargin: '300px' }
     );
 
     observer.observe(itemRef.current);
@@ -49,13 +49,11 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
-
-    const padded = (num: number) => num.toString().padStart(2, '0');
-
+    const pad = (n: number) => n.toString().padStart(2, '0');
     if (hours > 0) {
-      return `${hours}:${padded(minutes)}:${padded(seconds)}`;
+      return `${hours}:${pad(minutes)}:${pad(seconds)}`;
     }
-    return `${minutes}:${padded(seconds)}`;
+    return `${minutes}:${pad(seconds)}`;
   };
 
   const formatFileSize = (bytes?: string) => {
@@ -68,21 +66,24 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
     return `${(num / (1024 * 1024)).toFixed(0)} MB`;
   };
 
+  const ext = (video.name.split('.').pop() || 'VID').toUpperCase().slice(0, 4);
+
   return (
     <div
       ref={itemRef}
       onClick={() => onSelect(video)}
-      className="group cursor-pointer bg-gray-800/90 border border-gray-700/60 rounded-xl overflow-hidden shadow-lg hover:shadow-indigo-500/20 hover:border-indigo-500/50 transition-all duration-300 transform hover:-translate-y-1 flex flex-col"
+      className="group cursor-pointer bg-[#0e111a]/90 hover:bg-[#131724] border border-white/[0.06] hover:border-indigo-500/40 rounded-2xl overflow-hidden shadow-lg hover:shadow-[0_12px_30px_-10px_rgba(99,102,241,0.22)] transition-all duration-300 transform hover:-translate-y-1 flex flex-col"
     >
-      <div className="relative aspect-video bg-gray-900 overflow-hidden flex items-center justify-center">
-        {/* Placeholder / Skeleton Icon */}
+      {/* 16:9 Thumbnail Area */}
+      <div className="relative aspect-video bg-[#080a10] overflow-hidden flex items-center justify-center">
+        {/* Placeholder skeleton */}
         {(!imgLoaded || !inView) && !imgError && (
-          <div className="absolute inset-0 bg-gray-800/60 animate-pulse flex items-center justify-center">
-            <PlayIcon className="w-10 h-10 text-gray-600" />
+          <div className="absolute inset-0 bg-white/[0.02] animate-pulse flex items-center justify-center">
+            <PlayIcon className="w-8 h-8 text-white/10" />
           </div>
         )}
 
-        {/* High-Resolution Thumbnail with Lazy Viewport Load */}
+        {/* Thumbnail Image */}
         {inView && !imgError ? (
           <img
             src={thumbSrc}
@@ -91,51 +92,61 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
             referrerPolicy="no-referrer"
             onLoad={() => setImgLoaded(true)}
             onError={() => setImgError(true)}
-            className={`w-full h-full object-cover transition-all duration-500 group-hover:scale-105 ${
+            className={`w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105 ${
               imgLoaded ? 'opacity-100' : 'opacity-0'
             }`}
           />
         ) : imgError ? (
-          <div className="w-full h-full flex flex-col items-center justify-center bg-gray-800 text-gray-500 p-2 text-center">
-            <PlayIcon className="w-12 h-12 mb-1 opacity-50" />
-            <span className="text-[10px] font-mono opacity-60">No Preview</span>
+          <div className="w-full h-full flex flex-col items-center justify-center bg-white/[0.02] text-gray-500 p-2 text-center">
+            <PlayIcon className="w-8 h-8 mb-1 opacity-30 text-gray-400" />
+            <span className="text-[10px] font-mono text-gray-500">Video</span>
           </div>
         ) : null}
 
-        {/* Hover play button overlay */}
-        <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-colors duration-300 flex items-center justify-center">
-          <div className="w-12 h-12 bg-indigo-600/90 backdrop-blur-sm rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 scale-75 group-hover:scale-100 transition-all duration-300 shadow-xl">
-            <PlayIcon className="w-6 h-6 text-white ml-1" />
+        {/* Dark gradient overlay */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 opacity-60 group-hover:opacity-40 transition-opacity" />
+
+        {/* Floating Play Button on Hover */}
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-11 h-11 rounded-full bg-indigo-600/90 backdrop-blur-md text-white flex items-center justify-center shadow-2xl opacity-0 group-hover:opacity-100 scale-75 group-hover:scale-100 transition-all duration-300 group-hover:shadow-[0_0_20px_rgba(99,102,241,0.6)]">
+            <PlayIcon className="w-5 h-5 ml-0.5" />
           </div>
         </div>
 
-        {/* Video Duration Badge */}
-        {video.videoMediaMetadata?.durationMillis && (
-          <div className="absolute bottom-2 right-2 bg-black/80 backdrop-blur-xs text-white text-[11px] font-mono font-semibold px-2 py-0.5 rounded shadow">
-            {formatDuration(video.videoMediaMetadata.durationMillis)}
+        {/* Resolution Badge */}
+        {video.videoMediaMetadata?.height && (
+          <div className="absolute top-2.5 left-2.5 bg-black/70 backdrop-blur-md text-indigo-300 border border-indigo-500/30 text-[10px] font-mono font-bold px-2 py-0.5 rounded-md shadow-sm">
+            {video.videoMediaMetadata.height >= 2160
+              ? '4K UHD'
+              : video.videoMediaMetadata.height >= 1080
+              ? '1080p'
+              : `${video.videoMediaMetadata.height}p`}
           </div>
         )}
 
-        {/* Video Quality Badge */}
-        {video.videoMediaMetadata?.height && (
-          <div className="absolute top-2 left-2 bg-indigo-900/80 backdrop-blur-xs text-indigo-200 border border-indigo-700/60 text-[10px] font-bold px-1.5 py-0.5 rounded shadow">
-            {video.videoMediaMetadata.height}p
+        {/* Duration Badge */}
+        {video.videoMediaMetadata?.durationMillis && (
+          <div className="absolute bottom-2.5 right-2.5 bg-black/80 backdrop-blur-md text-white text-[10px] font-mono font-medium px-2 py-0.5 rounded-md shadow-sm">
+            {formatDuration(video.videoMediaMetadata.durationMillis)}
           </div>
         )}
       </div>
 
-      {/* Info Card */}
+      {/* Info Details */}
       <div className="p-3.5 flex flex-col flex-1 justify-between">
         <h3
-          className="text-xs sm:text-sm font-semibold text-gray-200 line-clamp-2 group-hover:text-indigo-400 transition-colors duration-200"
+          className="text-xs sm:text-sm font-medium text-gray-200 line-clamp-2 group-hover:text-white transition-colors duration-200 leading-snug"
           title={video.name}
         >
           {video.name}
         </h3>
-        <div className="flex items-center justify-between text-[11px] text-gray-400 mt-2">
-          {video.size && <span className="font-mono">{formatFileSize(video.size)}</span>}
-          <span className="text-[10px] uppercase font-mono text-gray-400 bg-gray-700/50 px-1.5 py-0.5 rounded">
-            {(video.name.split('.').pop() || 'VIDEO').slice(0, 4)}
+
+        <div className="flex items-center justify-between text-[11px] text-gray-400 mt-3 pt-2 border-t border-white/[0.04]">
+          <span className="font-mono text-gray-400 text-[11px]">
+            {formatFileSize(video.size) || 'Drive Stream'}
+          </span>
+          <span className="text-[9px] uppercase font-mono font-semibold tracking-wider text-gray-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04]">
+            {ext}
           </span>
         </div>
       </div>
