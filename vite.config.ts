@@ -34,6 +34,13 @@ function parseDuration(val: any): number {
   return isNaN(n) ? 0 : n;
 }
 
+function isUsableWebVtt(contents: Buffer): boolean {
+  // A WebVTT header alone is what FFmpeg leaves behind when extraction is
+  // interrupted or a stream cannot be converted. Do not cache that response:
+  // otherwise one failed attempt permanently looks like an empty subtitle.
+  return contents.includes(Buffer.from('-->'));
+}
+
 function streamProxyPlugin() {
   const handler = async (req: any, res: any, next: any) => {
     const rawUrl = req.url || '';
@@ -263,12 +270,17 @@ function streamProxyPlugin() {
 
         // Serve instantly from disk if previously cached
         if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 10) {
-          res.statusCode = 200;
-          res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          res.setHeader('Cache-Control', 'public, max-age=86400');
-          fs.createReadStream(cacheFile).pipe(res);
-          return;
+          const cachedSubtitles = fs.readFileSync(cacheFile);
+          if (isUsableWebVtt(cachedSubtitles)) {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            res.end(cachedSubtitles);
+            return;
+          }
+          // Replace stale partial cache entries from interrupted conversions.
+          fs.unlinkSync(cacheFile);
         }
 
         // If client requested a bitmap subtitle, return a helpful WebVTT cue
@@ -317,17 +329,24 @@ function streamProxyPlugin() {
         });
 
         ffmpeg.on('close', (code) => {
-          if (code === 0 && chunks.length > 0) {
-            fs.writeFile(cacheFile, Buffer.concat(chunks), () => {});
+          const extractedSubtitles = Buffer.concat(chunks);
+          if (code === 0 && isUsableWebVtt(extractedSubtitles)) {
+            fs.writeFile(cacheFile, extractedSubtitles, () => {});
           }
           if (!res.writableEnded) {
             res.end();
           }
         });
 
-        req.on('close', () => {
-          ffmpeg.kill('SIGKILL');
-        });
+        // `req.close` also fires for a normally completed GET request. Killing
+        // FFmpeg there made subtitle responses randomly end before any cues
+        // were emitted. Only stop the work when the client actually aborts or
+        // the response connection closes before it has finished.
+        const stopSubtitleExtraction = () => {
+          if (!res.writableEnded) ffmpeg.kill('SIGKILL');
+        };
+        req.on('aborted', stopSubtitleExtraction);
+        res.on('close', stopSubtitleExtraction);
 
         ffmpeg.on('error', (err) => {
           console.error('[ffmpeg subtitle extraction error]', err);
@@ -484,9 +503,11 @@ function streamProxyPlugin() {
           }
         });
 
-        req.on('close', () => {
-          ffmpeg.kill('SIGKILL');
-        });
+        const stopThumbnail = () => {
+          if (!res.writableEnded) ffmpeg.kill('SIGKILL');
+        };
+        req.on('aborted', stopThumbnail);
+        res.on('close', stopThumbnail);
       } catch (err: any) {
         if (!res.headersSent) {
           res.statusCode = 500;
@@ -549,12 +570,10 @@ function streamProxyPlugin() {
         res.setHeader('Access-Control-Allow-Headers', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
 
-        // A/V Sync fix:
-        // -ss before -i: fast seek to nearest keyframe before startTime
-        // -headers directly before -i: FFmpeg v9 requires this ordering
-        // -avoid_negative_ts make_zero: normalizes all output timestamps to start at 0
-        //   so browser video.currentTime = 0 at seek point, preventing A/V drift
-        // -fflags +genpts: regenerate PTS from DTS for clean monotonic timestamps
+        // Preserve the input timestamps, including per-track start offsets.
+        // Matroska files commonly carry an audio/video delay; without copyts,
+        // FFmpeg can normalize the re-encoded audio independently and make it
+        // lead the copied video after an audio switch.
         const ffmpegArgs = [
           '-loglevel', 'error',
           '-reconnect', '1',
@@ -563,13 +582,14 @@ function streamProxyPlugin() {
           '-ss', startTime.toString(),
           '-headers', headersParam,
           '-i', driveUrl,
+          '-copyts',
+          '-start_at_zero',
           '-map', '0:v:0',
           '-map', `0:a:${audioIndex}`,
           '-c:v', 'copy',
           '-c:a', 'aac',
           '-b:a', '320k',
           '-avoid_negative_ts', 'make_zero',
-          '-fflags', '+genpts',
           '-f', 'mp4',
           '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
           'pipe:1',
@@ -580,9 +600,11 @@ function streamProxyPlugin() {
 
         ffmpeg.stderr.on('data', () => {});
 
-        req.on('close', () => {
-          ffmpeg.kill('SIGKILL');
-        });
+        const stopRemux = () => {
+          if (!res.writableEnded) ffmpeg.kill('SIGKILL');
+        };
+        req.on('aborted', stopRemux);
+        res.on('close', stopRemux);
 
         ffmpeg.on('error', (err) => {
           console.error('[ffmpeg remux stream error]', err);
@@ -653,9 +675,11 @@ function streamProxyPlugin() {
       if (driveRes.body) {
         // @ts-ignore
         const nodeStream = Readable.fromWeb(driveRes.body);
-        req.on('close', () => {
-          nodeStream.destroy();
-        });
+        const stopDirectStream = () => {
+          if (!res.writableEnded) nodeStream.destroy();
+        };
+        req.on('aborted', stopDirectStream);
+        res.on('close', stopDirectStream);
         nodeStream.pipe(res);
       } else {
         res.end();

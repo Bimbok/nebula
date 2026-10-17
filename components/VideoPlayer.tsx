@@ -198,6 +198,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const controlsTimeoutRef = useRef<any>(null);
   const scrubberContainerRef = useRef<HTMLDivElement>(null);
+  const subtitleAbortRef = useRef<AbortController | null>(null);
 
   // Streaming & Playback States
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
@@ -234,7 +235,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<string>('off');
   const [isProbingTracks, setIsProbingTracks] = useState<boolean>(true);
   const [isSubtitleLoading, setIsSubtitleLoading] = useState<boolean>(false);
-  const [trackBlobUrl, setTrackBlobUrl] = useState<string | null>(null);
   const [resumeTime, setResumeTime] = useState<number>(0);
   const [subtitleSize, setSubtitleSize] = useState<'normal' | 'large'>('normal');
 
@@ -313,6 +313,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   // 2. Fetch and parse WebVTT cues incrementally
   useEffect(() => {
+    subtitleAbortRef.current?.abort();
+
     if (selectedSubtitleId === 'off') {
       setSubtitleCues([]);
       setActiveCueText(null);
@@ -320,7 +322,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
       return;
     }
 
-    let isCancelled = false;
+    const controller = new AbortController();
+    subtitleAbortRef.current = controller;
+    const isCurrentRequest = () => subtitleAbortRef.current === controller && !controller.signal.aborted;
+
+    // Never leave the preceding track on-screen while this track is loading.
+    setSubtitleCues([]);
+    setActiveCueText(null);
+
     const loadSubtitles = async () => {
       setIsSubtitleLoading(true);
       try {
@@ -328,9 +337,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
         if (!matched) return;
 
         if (matched.isCustom && matched.blobUrl) {
-          const res = await fetch(matched.blobUrl);
+          const res = await fetch(matched.blobUrl, { signal: controller.signal });
           const vttText = await res.text();
-          if (!isCancelled && vttText) {
+          if (isCurrentRequest() && vttText) {
             setSubtitleCues(parseWebVttCues(vttText));
           }
           return;
@@ -338,12 +347,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
         const isBitmapParam = matched.isBitmap ? '&isBitmap=true' : '';
         const subUrl = `/api/subtitles?fileId=${video.id}&streamIndex=${matched.streamIndex}&token=${encodeURIComponent(token)}${isBitmapParam}`;
-        const res = await fetch(subUrl);
+        const res = await fetch(subUrl, { signal: controller.signal });
         if (!res.ok) throw new Error('Subtitle fetch failed');
 
         if (!res.body) {
           const vttText = await res.text();
-          if (!isCancelled && vttText) {
+          if (isCurrentRequest() && vttText) {
             setSubtitleCues(parseWebVttCues(vttText));
           }
           return;
@@ -355,7 +364,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
         while (true) {
           const { done, value } = await reader.read();
-          if (isCancelled) break;
+          if (!isCurrentRequest()) break;
 
           if (value) {
             receivedText += decoder.decode(value, { stream: !done });
@@ -366,6 +375,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
           }
 
           if (done) {
+            receivedText += decoder.decode();
             if (receivedText) {
               setSubtitleCues(parseWebVttCues(receivedText));
             }
@@ -373,9 +383,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
           }
         }
       } catch (err) {
-        console.error('Failed to load subtitles:', err);
+        if ((err as DOMException).name !== 'AbortError') {
+          console.error('Failed to load subtitles:', err);
+        }
       } finally {
-        if (!isCancelled) {
+        if (isCurrentRequest()) {
           setIsSubtitleLoading(false);
         }
       }
@@ -384,56 +396,61 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
     loadSubtitles();
 
     return () => {
-      isCancelled = true;
+      controller.abort();
     };
   }, [selectedSubtitleId, subtitleTracks, video.id, token]);
 
-  // 3. Subtitle Cue Synchronization
+  // Keep captions tied to the timestamp of the frame actually being presented.
+  // `timeupdate` is deliberately throttled by browsers (often to 4Hz), which
+  // made captions visibly late and especially noticeable after a seek.
   useEffect(() => {
     if (subtitleCues.length === 0 || selectedSubtitleId === 'off') {
       setActiveCueText(null);
       return;
     }
 
-    const matched = subtitleCues.filter((c) => currentTime >= c.start && currentTime <= c.end);
-    if (matched.length > 0) {
-      setActiveCueText(matched.map((m) => m.text).join('\n'));
-    } else {
-      setActiveCueText(null);
-    }
-  }, [currentTime, subtitleCues, selectedSubtitleId]);
+    const player = videoRef.current;
+    if (!player) return;
 
-  // Native HTML5 track Blob URL for TV / mobile support
-  useEffect(() => {
-    if (subtitleCues.length === 0 || selectedSubtitleId === 'off') {
-      if (trackBlobUrl) {
-        URL.revokeObjectURL(trackBlobUrl);
-        setTrackBlobUrl(null);
-      }
-      return;
-    }
-
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const formatVttTime = (t: number) => {
-      const h = Math.floor(t / 3600);
-      const m = Math.floor((t % 3600) / 60);
-      const s = (t % 60).toFixed(3);
-      return `${pad(h)}:${pad(m)}:${s.padStart(6, '0')}`;
+    const updateCue = (time: number) => {
+      const text = subtitleCues
+        .filter((cue) => time >= cue.start && time < cue.end)
+        .map((cue) => cue.text)
+        .join('\n') || null;
+      setActiveCueText((previous) => (previous === text ? previous : text));
     };
 
-    let vtt = 'WEBVTT\n\n';
-    subtitleCues.forEach((cue, idx) => {
-      vtt += `${idx + 1}\n${formatVttTime(cue.start)} --> ${formatVttTime(cue.end)}\n${cue.text}\n\n`;
-    });
+    const onSeeked = () => updateCue(player.currentTime + (selectedAudioIndex !== 'default' ? resumeTime : 0));
+    onSeeked();
+    player.addEventListener('seeked', onSeeked);
 
-    const blob = new Blob([vtt], { type: 'text/vtt' });
-    const url = URL.createObjectURL(blob);
-    setTrackBlobUrl(url);
+    type FrameCallbackVideo = HTMLVideoElement & {
+      requestVideoFrameCallback?: (callback: (_now: number, metadata: { mediaTime: number }) => void) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    };
+    const framePlayer = player as FrameCallbackVideo;
+    let frameHandle: number | undefined;
+    let fallbackTimer: number | undefined;
+    const offset = selectedAudioIndex !== 'default' ? resumeTime : 0;
+    const onFrame = (_now: number, metadata: { mediaTime: number }) => {
+      updateCue(metadata.mediaTime + offset);
+      frameHandle = framePlayer.requestVideoFrameCallback?.(onFrame);
+    };
+
+    if (framePlayer.requestVideoFrameCallback) {
+      frameHandle = framePlayer.requestVideoFrameCallback(onFrame);
+    } else {
+      // Older browsers do not expose frame callbacks; retain a tighter fallback
+      // than `timeupdate` without changing the video's playback clock.
+      fallbackTimer = window.setInterval(() => onSeeked(), 50);
+    }
 
     return () => {
-      URL.revokeObjectURL(url);
+      player.removeEventListener('seeked', onSeeked);
+      if (frameHandle !== undefined) framePlayer.cancelVideoFrameCallback?.(frameHandle);
+      if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
     };
-  }, [subtitleCues, selectedSubtitleId]);
+  }, [subtitleCues, selectedSubtitleId, selectedAudioIndex, resumeTime]);
 
   // Fullscreen listener
   useEffect(() => {
@@ -619,6 +636,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   // Subtitle selection
   const handleSubtitleChange = (subIdStr: string) => {
+    setActiveCueText(null);
+    setSubtitleCues([]);
     setSelectedSubtitleId(subIdStr);
   };
 
@@ -877,15 +896,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
             onError={handleError}
             className="focus:outline-none cursor-pointer"
           >
-            {trackBlobUrl && (
-              <track
-                key={trackBlobUrl}
-                kind="subtitles"
-                src={trackBlobUrl}
-                default
-                label="Subtitles"
-              />
-            )}
             Your browser does not support the video tag.
           </video>
 
