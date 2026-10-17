@@ -183,21 +183,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   // Calculate True Total Duration
   // 1. Probed duration from ffprobe or cached metadata on disk (highest precision)
   // 2. Google Drive videoMediaMetadata.durationMillis
-  // 3. Fallback to HTML5 video duration ONLY if stable and not a fragmented chunk
-  const html5Duration = videoRef.current?.duration;
-  const isHtml5DurationUsable =
-    typeof html5Duration === 'number' &&
-    isFinite(html5Duration) &&
-    html5Duration > 60 &&
-    html5Duration > currentTime + 10;
-
+  // Do not fall back to video.duration as fragmented stream pipes lack container duration headers
   const knownTotalDuration =
     probedDuration > 0
       ? probedDuration
       : video.videoMediaMetadata?.durationMillis
       ? parseInt(video.videoMediaMetadata.durationMillis, 10) / 1000
-      : isHtml5DurationUsable
-      ? html5Duration
       : 0;
 
   // Stream URL calculation
@@ -227,6 +218,17 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
           }
           if (data.subtitleTracks && Array.isArray(data.subtitleTracks)) {
             setSubtitleTracks(data.subtitleTracks);
+            // If subtitles are currently off, auto-select the first English text track if available
+            setSelectedSubtitleId((prev) => {
+              if (prev === 'off') {
+                const eng = data.subtitleTracks.find(
+                  (s: SubtitleTrackInfo) =>
+                    !s.isBitmap && (s.language === 'eng' || s.label.toLowerCase().includes('eng'))
+                );
+                return eng ? eng.id.toString() : 'off';
+              }
+              return prev;
+            });
           }
           if (data.duration && data.duration > 0) {
             setProbedDuration(data.duration);
@@ -425,7 +427,32 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
     }
   };
 
-  // 6. Keyboard shortcuts
+  // 6. Unified Timeline Seek Handler
+  const seekTo = useCallback(
+    (targetSeconds: number) => {
+      const clamped = Math.max(0, Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, targetSeconds));
+      setCurrentTime(clamped);
+
+      if (selectedAudioIndex !== 'default') {
+        // Alternate audio remux mode: restart stream from seek position with sample-accurate sync
+        setResumeTime(clamped);
+        setIsBuffering(true);
+      } else {
+        // Direct stream mode: native browser HTTP range seek
+        if (videoRef.current) {
+          videoRef.current.currentTime = clamped;
+        }
+      }
+    },
+    [knownTotalDuration, selectedAudioIndex]
+  );
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const targetSeconds = parseFloat(e.target.value);
+    seekTo(targetSeconds);
+  };
+
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -458,10 +485,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
         v.muted = !v.muted;
       } else if (event.key === 'ArrowLeft') {
         event.preventDefault();
-        v.currentTime = Math.max(0, v.currentTime - 10);
+        seekTo(Math.max(0, currentTime - 10));
       } else if (event.key === 'ArrowRight') {
         event.preventDefault();
-        v.currentTime = Math.min(knownTotalDuration || v.duration || Infinity, v.currentTime + 10);
+        seekTo(Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, currentTime + 10));
       } else if (event.key === 'ArrowUp') {
         event.preventDefault();
         v.volume = Math.min(1, v.volume + 0.1);
@@ -473,31 +500,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, toggleFullscreen, cycleAspectRatio, knownTotalDuration]);
-
-  // 7. Interactive Timeline Seek Handler
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const targetSeconds = parseFloat(e.target.value);
-    setCurrentTime(targetSeconds);
-
-    if (videoRef.current) {
-      if (selectedAudioIndex !== 'default') {
-        // Remux mode: update resumeTime and reset stream timestamp
-        setResumeTime(targetSeconds);
-        setIsBuffering(true);
-      } else {
-        videoRef.current.currentTime = targetSeconds;
-      }
-    }
-  };
+  }, [onClose, toggleFullscreen, cycleAspectRatio, knownTotalDuration, currentTime, seekTo]);
 
   // Audio track switching
   const handleAudioTrackChange = (newAudioIdxStr: string) => {
     if (newAudioIdxStr === selectedAudioIndex) return;
 
-    if (videoRef.current) {
-      setResumeTime(videoRef.current.currentTime);
-    }
+    // Lock position across track changes
+    setResumeTime(currentTime);
     setSelectedAudioIndex(newAudioIdxStr);
     setIsBuffering(true);
     setPlaybackError(null);
@@ -552,6 +562,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   const handleCanPlay = () => {
     setIsBuffering(false);
+    if (selectedAudioIndex === 'default' && resumeTime > 0 && videoRef.current) {
+      videoRef.current.currentTime = resumeTime;
+      setResumeTime(0);
+    }
   };
 
   const handleWaiting = () => {
@@ -569,7 +583,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   const handleTimeUpdate = () => {
     if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
+      const offset = selectedAudioIndex !== 'default' ? resumeTime : 0;
+      setCurrentTime(offset + videoRef.current.currentTime);
     }
   };
 

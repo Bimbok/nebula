@@ -287,18 +287,15 @@ function streamProxyPlugin() {
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Transfer-Encoding', 'chunked');
 
-        // Extract subtitles with -vn -an so ffmpeg skips decoding video/audio frames
+        // Extract subtitles without mapping video/audio so demuxer streams WebVTT cleanly
         const ffmpeg = spawn('ffmpeg', [
           '-headers', headersParam,
-          '-seekable', '1',
-          '-multiple_requests', '1',
           '-reconnect', '1',
           '-reconnect_streamed', '1',
           '-reconnect_delay_max', '5',
           '-i', driveUrl,
-          '-vn',
-          '-an',
           '-map', `0:${streamIndex}`,
           '-c:s', 'webvtt',
           '-f', 'webvtt',
@@ -309,9 +306,17 @@ function streamProxyPlugin() {
         ffmpeg.stdout.on('data', (c) => {
           chunks.push(c);
           res.write(c);
+          if (typeof (res as any).flush === 'function') {
+            (res as any).flush();
+          }
         });
 
-        ffmpeg.stderr.on('data', () => {});
+        ffmpeg.stderr.on('data', (d) => {
+          const str = d.toString();
+          if (!str.includes('frame=') && !str.includes('speed=')) {
+            console.warn('[ffmpeg-sub stderr]', str.trim());
+          }
+        });
 
         ffmpeg.on('close', (code) => {
           if (code === 0 && chunks.length > 0) {
@@ -548,10 +553,13 @@ function streamProxyPlugin() {
 
         const ffmpegArgs = [
           '-headers', headersParam,
+          '-reconnect', '1',
+          '-reconnect_streamed', '1',
+          '-reconnect_delay_max', '5',
         ];
 
         if (startTime > 0) {
-          ffmpegArgs.push('-ss', startTime.toString());
+          ffmpegArgs.push('-noaccurate_seek', '-ss', startTime.toString());
         }
 
         ffmpegArgs.push(
@@ -561,6 +569,7 @@ function streamProxyPlugin() {
           '-c:v', 'copy',
           '-c:a', 'aac',
           '-b:a', '320k',
+          '-af', 'aresample=async=1:first_pts=0',
           '-f', 'mp4',
           '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
           'pipe:1'
