@@ -73,7 +73,7 @@ const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
             <div>
               <div className="flex items-center space-x-2">
                 <span className="text-base font-bold tracking-tight text-white group-hover:text-indigo-200 transition-colors">
-                  DriveStream
+                  Nebula
                 </span>
                 <span className="text-[9px] uppercase tracking-wider font-mono font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/20 px-1.5 py-0.5 rounded-full">
                   Cinema

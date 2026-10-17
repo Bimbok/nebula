@@ -143,7 +143,7 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
 
         <div className="flex items-center justify-between text-[11px] text-gray-400 mt-3 pt-2 border-t border-white/[0.04]">
           <span className="font-mono text-gray-400 text-[11px]">
-            {formatFileSize(video.size) || 'Drive Stream'}
+            {formatFileSize(video.size) || 'Nebula Stream'}
           </span>
           <span className="text-[9px] uppercase font-mono font-semibold tracking-wider text-gray-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04]">
             {ext}

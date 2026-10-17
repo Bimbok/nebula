@@ -39,10 +39,10 @@ const Login: React.FC<LoginProps> = ({ onLogin, isLoading }) => {
         </div>
 
         <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white mb-2">
-          Cinema in Your Browser
+          Nebula Cinema
         </h2>
         <p className="text-xs sm:text-sm text-gray-400 max-w-sm mx-auto mb-8 leading-relaxed">
-          Stream high-bitrate MKV, MP4, and HEVC videos directly from Google Drive with zero local storage requirements.
+          High-fidelity cinema streaming directly from your Google Drive with zero local storage requirements.
         </p>
 
         {/* Feature badges */}

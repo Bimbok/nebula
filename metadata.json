@@ -1,4 +1,4 @@
 {
-  "name": "Google Drive Video Streamer",
-  "description": "A web application to securely stream videos directly from your Google Drive account without any quality loss. Sign in, browse your video library, and enjoy seamless playback."
+  "name": "Nebula",
+  "description": "A high-fidelity web application to stream videos directly from your Google Drive account without quality loss. Multi-audio remuxing, embedded subtitles, instant HTTP range streaming, and LAN sharing."
 }
