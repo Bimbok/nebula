@@ -500,10 +500,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
     resetControlsTimer(true);
   };
 
-  const handleTouch = () => {
-    resetControlsTimer(true);
-  };
-
   // Auto-hide controls when video starts or resumes playing
   useEffect(() => {
     if (isPlaying) {
@@ -535,22 +531,64 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
     }
   }, []);
 
-  // Canvas click/tap handler: On mobile, tap toggles OSD without pausing; on desktop, click plays/pauses
-  const handleVideoCanvasClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const isMobile = typeof window !== 'undefined' && (window.innerWidth < 768 || 'ontouchstart' in window);
+  const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const lastTouchTimeRef = useRef<number>(0);
 
-    if (isMobile) {
-      if (isControlsVisible) {
-        setIsControlsVisible(false);
-        if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+  // Unified screen tap handler: Touching anywhere on screen brings up OSD (or toggles on mobile)
+  const handleScreenTap = useCallback(
+    (source: 'touch' | 'click') => {
+      const now = Date.now();
+      if (source === 'touch') {
+        lastTouchTimeRef.current = now;
+      } else if (source === 'click') {
+        // Prevent synthetic 300ms ghost clicks from immediately re-toggling after a touch event
+        if (now - lastTouchTimeRef.current < 450) {
+          return;
+        }
+      }
+
+      const isTouch =
+        typeof window !== 'undefined' &&
+        ('ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth < 768);
+
+      if (isTouch) {
+        if (!isControlsVisible) {
+          // If controls are hidden: touching anywhere brings up OSD immediately
+          resetControlsTimer(true);
+        } else {
+          // If controls are visible: tapping screen background toggles them off
+          setIsControlsVisible(false);
+          if (controlsTimeoutRef.current) {
+            clearTimeout(controlsTimeoutRef.current);
+          }
+        }
       } else {
+        // Desktop mouse click: toggle Play/Pause
+        togglePlay();
         resetControlsTimer(true);
       }
-    } else {
-      togglePlay();
-      resetControlsTimer(true);
+    },
+    [isControlsVisible, resetControlsTimer, togglePlay]
+  );
+
+  const handleCanvasTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      touchStartPosRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     }
+  };
+
+  const handleCanvasTouchEnd = (e: React.TouchEvent) => {
+    if (!touchStartPosRef.current) return;
+    const touch = e.changedTouches[0];
+    if (touch) {
+      const dx = Math.abs(touch.clientX - touchStartPosRef.current.x);
+      const dy = Math.abs(touch.clientY - touchStartPosRef.current.y);
+      // Treat as a tap if finger moved less than 15px (not a swipe or scroll)
+      if (dx < 15 && dy < 15) {
+        handleScreenTap('touch');
+      }
+    }
+    touchStartPosRef.current = null;
   };
 
   // Unified Seek Handler
@@ -819,8 +857,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
       <div
         ref={playerContainerRef}
         onMouseMove={handleMouseMove}
-        onTouchStart={handleTouch}
-        onTouchMove={handleTouch}
         onMouseLeave={() => {
           if (isPlaying) setIsControlsVisible(false);
         }}
@@ -908,10 +944,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
         {/* Video Canvas Container */}
         <div
-          className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${
+          className={`relative w-full bg-black flex items-center justify-center overflow-hidden cursor-pointer ${
             isFullscreen ? 'flex-1 h-full' : 'flex-1 sm:flex-none sm:aspect-video'
           }`}
-          onClick={handleVideoCanvasClick}
+          onTouchStart={handleCanvasTouchStart}
+          onTouchEnd={handleCanvasTouchEnd}
+          onClick={() => handleScreenTap('click')}
         >
           <video
             ref={videoRef}
@@ -929,7 +967,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
             onPause={handlePause}
             onTimeUpdate={handleTimeUpdate}
             onError={handleError}
-            className="focus:outline-none cursor-pointer"
+            className="focus:outline-none pointer-events-none"
           >
             Your browser does not support the video tag.
           </video>
@@ -937,7 +975,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
           {/* Mobile Center Quick Controls (Rewind 10s, Big Play/Pause, Forward 10s) */}
           <div
             className={`sm:hidden absolute inset-0 flex items-center justify-center space-x-8 pointer-events-none transition-opacity duration-200 z-25 ${
-              isControlsVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0'
+              isControlsVisible ? 'opacity-100' : 'opacity-0'
             }`}
           >
             <button
@@ -946,7 +984,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                 seekTo(Math.max(0, currentTime - 10));
                 resetControlsTimer(true);
               }}
-              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center active:scale-90 transition-transform shadow-lg"
+              className="pointer-events-auto w-12 h-12 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center active:scale-90 transition-transform shadow-lg"
               title="Rewind 10s"
             >
               <Icons.Rewind10 className="w-6 h-6" />
@@ -958,7 +996,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                 togglePlay();
                 resetControlsTimer(true);
               }}
-              className="w-16 h-16 rounded-full bg-indigo-600/90 backdrop-blur-md border border-white/25 text-white flex items-center justify-center active:scale-95 transition-transform shadow-2xl"
+              className="pointer-events-auto w-16 h-16 rounded-full bg-indigo-600/90 backdrop-blur-md border border-white/25 text-white flex items-center justify-center active:scale-95 transition-transform shadow-2xl"
               title={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
@@ -974,7 +1012,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                 seekTo(Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, currentTime + 10));
                 resetControlsTimer(true);
               }}
-              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center active:scale-90 transition-transform shadow-lg"
+              className="pointer-events-auto w-12 h-12 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center active:scale-90 transition-transform shadow-lg"
               title="Forward 10s"
             >
               <Icons.Forward10 className="w-6 h-6" />
@@ -1014,7 +1052,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
           {/* Aspect Ratio HUD Toast */}
           {showAspectToast && (
-            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-black/80 backdrop-blur-xl border border-indigo-500/40 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-2xl animate-pop-in flex items-center space-x-2">
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-black/80 backdrop-blur-xl border border-indigo-500/40 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-2xl animate-pop-in flex items-center space-x-2 pointer-events-none">
               <span>{showAspectToast}</span>
             </div>
           )}
