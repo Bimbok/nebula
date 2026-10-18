@@ -18,12 +18,29 @@ declare global {
   }
 }
 
+const hasSavedSession = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    return Boolean(
+      localStorage.getItem('gdrive_oauth_token') ||
+      localStorage.getItem('gdrive_logged_in') === 'true' ||
+      (document.cookie && document.cookie.includes('gdrive_token=')) ||
+      new URLSearchParams(window.location.search).get('token') ||
+      new URLSearchParams(window.location.search).get('auth_token')
+    );
+  } catch {
+    return false;
+  }
+};
+
 const App: React.FC = () => {
   const [isSignedIn, setIsSignedIn] = useState<boolean>(false);
+  const [isAuthRestoring, setIsAuthRestoring] = useState<boolean>(hasSavedSession);
+  const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
   const [videos, setVideos] = useState<GoogleDriveFile[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<GoogleDriveFile | null>(null);
   const [initialResumeTime, setInitialResumeTime] = useState<number | undefined>(undefined);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(hasSavedSession);
   const [error, setError] = useState<string | null>(null);
   const [isGapiLoaded, setIsGapiLoaded] = useState(false);
   const [isGsiLoaded, setIsGsiLoaded] = useState(false);
@@ -31,6 +48,17 @@ const App: React.FC = () => {
   const [activeClientId, setActiveClientId] = useState<string>(GOOGLE_CLIENT_ID);
   const [activeApiKey, setActiveApiKey] = useState<string>(GOOGLE_API_KEY);
   const tokenRefreshTimeoutRef = useRef<any>(null);
+
+  // Safety fallback: if auth restoration takes longer than 6 seconds, show login interface
+  useEffect(() => {
+    if (isAuthRestoring) {
+      const timer = setTimeout(() => {
+        setIsAuthRestoring(false);
+        setIsLoading(false);
+      }, 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [isAuthRestoring]);
 
   useEffect(() => {
     let scriptGapi: HTMLScriptElement | null = null;
@@ -89,12 +117,14 @@ const App: React.FC = () => {
             const detailMsg = err?.error?.message || err?.details || (typeof err === 'object' ? JSON.stringify(err) : String(err));
             setError(`Failed to initialize Google API client (${detailMsg}). Ensure Google Drive API is enabled in your Google Cloud Console.`);
             setIsLoading(false);
+            setIsAuthRestoring(false);
           });
         });
       };
       scriptGapi.onerror = () => {
         setError("Failed to load Google API script. Please check your network connection and ad-blockers.");
         setIsLoading(false);
+        setIsAuthRestoring(false);
       };
       document.body.appendChild(scriptGapi);
 
@@ -108,6 +138,7 @@ const App: React.FC = () => {
       scriptGsi.onerror = () => {
         setError("Failed to load Google Sign-In script. Please check your network connection and ad-blockers.");
         setIsLoading(false);
+        setIsAuthRestoring(false);
       };
       document.body.appendChild(scriptGsi);
     };
@@ -185,6 +216,8 @@ const App: React.FC = () => {
   const persistTokenSession = useCallback((tokenResponse: any) => {
     window.gapi.client.setToken(tokenResponse);
     setIsSignedIn(true);
+    setIsAuthRestoring(false);
+    setIsSigningIn(false);
 
     const expiresIn = tokenResponse.expires_in ? parseInt(tokenResponse.expires_in, 10) : 3600;
     const expiresAt = Date.now() + (expiresIn - 60) * 1000;
@@ -228,6 +261,7 @@ const App: React.FC = () => {
         window.history.replaceState({}, document.title, window.location.pathname);
         window.gapi.client.setToken(tokenObj);
         setIsSignedIn(true);
+        setIsAuthRestoring(false);
         fetchUserVideos();
         return;
       }
@@ -242,6 +276,7 @@ const App: React.FC = () => {
           if (parsed?.access_token) {
             window.gapi.client.setToken(parsed);
             setIsSignedIn(true);
+            setIsAuthRestoring(false);
 
             // If token has more than 2 minutes remaining, use immediately
             if (parsed.expires_at && parsed.expires_at > Date.now() + 120000) {
@@ -267,11 +302,15 @@ const App: React.FC = () => {
           }
         } catch (e) {
           console.error('Failed to parse saved session token', e);
+          setIsAuthRestoring(false);
         }
       } else if (wasLoggedIn && window.tokenClient) {
         // Was previously signed in: silent auto-login
         window.tokenClient.requestAccessToken({ prompt: '' });
         return;
+      } else if (!wasLoggedIn && !savedTokenStr) {
+        setIsAuthRestoring(false);
+        setIsLoading(false);
       }
     }
   }, [isGapiLoaded, fetchUserVideos]);
@@ -283,16 +322,19 @@ const App: React.FC = () => {
           client_id: activeClientId,
           scope: SCOPES,
           callback: async (tokenResponse: any) => {
+            setIsSigningIn(false);
             if (tokenResponse.error) {
               console.warn('Google Sign-In notice:', tokenResponse.error);
               if (tokenResponse.error !== 'interaction_required' && tokenResponse.error !== 'immediate_failed') {
                 setError(`Google Sign-In Error: ${tokenResponse.error_description || tokenResponse.error}`);
               }
               setIsLoading(false);
+              setIsAuthRestoring(false);
               return;
             }
             if (tokenResponse.access_token) {
               persistTokenSession(tokenResponse);
+              setIsAuthRestoring(false);
               await fetchUserVideos();
             }
           },
@@ -318,21 +360,24 @@ const App: React.FC = () => {
           }
         } else if (!savedTokenStr) {
           setIsLoading(false);
+          setIsAuthRestoring(false);
         }
       } catch (err) {
         console.error('Error initializing token client', err);
         setError('Failed to initialize Google Sign-In. Check your Client ID configuration.');
         setIsLoading(false);
+        setIsAuthRestoring(false);
+        setIsSigningIn(false);
       }
     }
   }, [isGapiLoaded, isGsiLoaded, activeClientId, fetchUserVideos, persistTokenSession]);
 
   const handleLogin = () => {
     if (!window.tokenClient) {
-      setError('Google Sign-In is not ready yet. Please wait a moment.');
+      setError('Google Sign-In is initializing. Please click again in a moment.');
       return;
     }
-    setIsLoading(true);
+    setIsSigningIn(true);
     if (!window.gapi?.client?.getToken()) {
       window.tokenClient.requestAccessToken({ prompt: 'consent' });
     } else {
@@ -357,6 +402,9 @@ const App: React.FC = () => {
       window.gapi.client.setToken(null);
     }
     setIsSignedIn(false);
+    setIsAuthRestoring(false);
+    setIsSigningIn(false);
+    setIsLoading(false);
     setVideos([]);
     setSelectedVideo(null);
     setInitialResumeTime(undefined);
@@ -427,8 +475,18 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {!isSignedIn ? (
-          <Login onLogin={handleLogin} isLoading={isLoading || !isGapiLoaded || !isGsiLoaded} />
+        {isAuthRestoring ? (
+          <div className="flex flex-col justify-center items-center h-80 space-y-4">
+            <MascotLogo size="xl" animated showBadge />
+            <div className="flex items-center space-x-2 text-indigo-400">
+              <Loader size="sm" />
+              <p className="text-xs font-medium text-gray-300 font-mono tracking-wide">
+                Connecting to Google Drive...
+              </p>
+            </div>
+          </div>
+        ) : !isSignedIn ? (
+          <Login onLogin={handleLogin} isLoading={isSigningIn} />
         ) : isLoading ? (
           <div className="flex flex-col justify-center items-center h-80 space-y-4">
             <MascotLogo size="xl" animated showBadge />
