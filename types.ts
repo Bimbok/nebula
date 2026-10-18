@@ -43,3 +43,21 @@ export interface SubtitleTrackInfo {
   isBitmap?: boolean;
 }
 
+export interface WatchProgress {
+  fileId: string;
+  name: string;
+  currentTime: number;
+  duration: number;
+  progressPercent: number;
+  thumbnailLink?: string;
+  videoMediaMetadata?: {
+    durationMillis?: string;
+    width?: number;
+    height?: number;
+  };
+  size?: string;
+  lastWatched: number;
+  audioIndex?: string;
+  subtitleId?: string;
+}
+

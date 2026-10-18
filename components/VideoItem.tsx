@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleDriveFile } from '../types';
 
+import { getWatchProgress } from '../services/watchProgressService';
+
 interface VideoItemProps {
   video: GoogleDriveFile;
   onSelect: (video: GoogleDriveFile) => void;
@@ -17,8 +19,20 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
   const [inView, setInView] = useState<boolean>(false);
   const [imgLoaded, setImgLoaded] = useState<boolean>(false);
   const [imgError, setImgError] = useState<boolean>(false);
+  const [watchProgress, setWatchProgress] = useState(() => getWatchProgress(video.id));
 
   const token = window.gapi?.client?.getToken?.()?.access_token || '';
+
+  // Update progress if changed elsewhere
+  useEffect(() => {
+    const handleUpdate = (e: any) => {
+      if (!e?.detail?.fileId || e.detail.fileId === video.id) {
+        setWatchProgress(getWatchProgress(video.id));
+      }
+    };
+    window.addEventListener('nebula_watch_progress_updated', handleUpdate);
+    return () => window.removeEventListener('nebula_watch_progress_updated', handleUpdate);
+  }, [video.id]);
 
   // Viewport intersection observer for true lazy loading of thumbnail
   useEffect(() => {
@@ -128,6 +142,16 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
         {video.videoMediaMetadata?.durationMillis && (
           <div className="absolute bottom-2.5 right-2.5 bg-black/80 backdrop-blur-md text-white text-[10px] font-mono font-medium px-2 py-0.5 rounded-md shadow-sm">
             {formatDuration(video.videoMediaMetadata.durationMillis)}
+          </div>
+        )}
+
+        {/* Watch Progress Bar */}
+        {watchProgress && watchProgress.progressPercent > 0 && (
+          <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/60 overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-400 rounded-r-full shadow-[0_0_8px_rgba(99,102,241,0.8)]"
+              style={{ width: `${watchProgress.progressPercent}%` }}
+            />
           </div>
         )}
       </div>

@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { GoogleDriveFile, AudioTrackInfo, SubtitleTrackInfo } from '../types';
 import Loader from './Loader';
+import { getWatchProgress, saveWatchProgress } from '../services/watchProgressService';
 
 interface VideoPlayerProps {
   video: GoogleDriveFile;
   onClose: () => void;
+  initialSeekTime?: number;
 }
 
 export type AspectRatioMode = 'fit' | 'crop' | 'stretch' | '21:9' | '16:9' | '4:3';
@@ -192,7 +194,7 @@ const formatTimestamp = (totalSeconds: number): string => {
 };
 
 
-const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
+const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTime }) => {
   const modalRef = useRef<HTMLDivElement>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -201,9 +203,20 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const scrubberContainerRef = useRef<HTMLDivElement>(null);
   const subtitleAbortRef = useRef<AbortController | null>(null);
 
+  // Saved watch progress lookup
+  const savedProgress = React.useMemo(() => getWatchProgress(video.id), [video.id]);
+  const initialTime =
+    typeof initialSeekTime === 'number' && initialSeekTime > 0
+      ? Math.floor(initialSeekTime)
+      : savedProgress && savedProgress.currentTime > 5 && savedProgress.progressPercent < 95
+      ? Math.floor(savedProgress.currentTime)
+      : 0;
+
   // Streaming & Playback States
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
-  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [currentTime, setCurrentTime] = useState<number>(initialTime);
+  const [resumeTime, setResumeTime] = useState<number>(initialTime);
+  const [showResumeToast, setShowResumeToast] = useState<boolean>(initialTime > 5);
   const [probedDuration, setProbedDuration] = useState<number>(0);
   const [isBuffering, setIsBuffering] = useState<boolean>(true);
   const [playbackError, setPlaybackError] = useState<{ message: string; code?: number } | null>(null);
@@ -228,15 +241,24 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [hoverPosition, setHoverPosition] = useState<number>(0);
 
-  // Audio & Subtitle Tracks
+  // Audio & Subtitle Tracks (Restoring saved preferences if available)
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([]);
   const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrackInfo[]>([]);
-  const [selectedAudioIndex, setSelectedAudioIndex] = useState<string>('0');
-  const [selectedSubtitleId, setSelectedSubtitleId] = useState<string>('off');
+  const [selectedAudioIndex, setSelectedAudioIndex] = useState<string>(savedProgress?.audioIndex || '0');
+  const [selectedSubtitleId, setSelectedSubtitleId] = useState<string>(savedProgress?.subtitleId || 'off');
   const [isProbingTracks, setIsProbingTracks] = useState<boolean>(true);
   const [isSubtitleLoading, setIsSubtitleLoading] = useState<boolean>(false);
-  const [resumeTime, setResumeTime] = useState<number>(0);
   const [subtitleSize, setSubtitleSize] = useState<'normal' | 'large'>('normal');
+
+  // Last saved timestamp tracker for throttling
+  const lastSavedTimeRef = useRef<number>(initialTime);
+
+  // Auto-dismiss resume toast after 4.5 seconds
+  useEffect(() => {
+    if (!showResumeToast) return;
+    const t = setTimeout(() => setShowResumeToast(false), 4500);
+    return () => clearTimeout(t);
+  }, [showResumeToast]);
 
   // Subtitle cue parser cache & active cue
   const [subtitleCues, setSubtitleCues] = useState<SubtitleCue[]>([]);
@@ -257,6 +279,26 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const currentStreamUrl = `/api/stream?fileId=${video.id}&token=${encodeURIComponent(token)}&audioIndex=${selectedAudioIndex}&startTime=${resumeTime}`;
 
   const absoluteStreamUrl = typeof window !== 'undefined' ? `${window.location.origin}${currentStreamUrl}` : currentStreamUrl;
+
+  // Persist watch progress helper
+  const persistCurrentProgress = useCallback(
+    (timeToSave?: number) => {
+      const time =
+        typeof timeToSave === 'number'
+          ? timeToSave
+          : videoRef.current
+          ? resumeTime + videoRef.current.currentTime
+          : currentTime;
+      if (isNaN(time) || time < 3) return;
+
+      saveWatchProgress(video, time, knownTotalDuration, {
+        audioIndex: selectedAudioIndex,
+        subtitleId: selectedSubtitleId,
+      });
+      lastSavedTimeRef.current = time;
+    },
+    [video, knownTotalDuration, selectedAudioIndex, selectedSubtitleId, currentTime, resumeTime]
+  );
 
   // 1. Probing streams for audio, subtitles, and total duration
   useEffect(() => {
@@ -595,6 +637,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const seekTo = useCallback(
     (targetSeconds: number) => {
       const clamped = Math.max(0, Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, targetSeconds));
+      persistCurrentProgress(clamped);
 
       if (selectedAudioIndex !== 'default') {
         const seekSec = Math.floor(clamped);
@@ -608,7 +651,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
         }
       }
     },
-    [knownTotalDuration, selectedAudioIndex]
+    [knownTotalDuration, selectedAudioIndex, persistCurrentProgress]
   );
 
   // Scrubber Hover Tooltip logic
@@ -775,13 +818,38 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   const handlePause = () => {
     setIsPlaying(false);
+    if (videoRef.current) {
+      persistCurrentProgress(resumeTime + videoRef.current.currentTime);
+    }
   };
 
   const handleTimeUpdate = () => {
     if (videoRef.current) {
-      setCurrentTime(resumeTime + videoRef.current.currentTime);
+      const absTime = resumeTime + videoRef.current.currentTime;
+      setCurrentTime(absTime);
+
+      // Throttle saving progress to localStorage every 4 seconds
+      if (Math.abs(absTime - lastSavedTimeRef.current) >= 4) {
+        persistCurrentProgress(absTime);
+      }
     }
   };
+
+  // Persist progress when closing or refreshing window
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (videoRef.current) {
+        persistCurrentProgress(resumeTime + videoRef.current.currentTime);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (videoRef.current) {
+        persistCurrentProgress(resumeTime + videoRef.current.currentTime);
+      }
+    };
+  }, [persistCurrentProgress, resumeTime]);
 
   const handleError = () => {
     setIsBuffering(false);
@@ -1054,6 +1122,35 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
           {showAspectToast && (
             <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-black/80 backdrop-blur-xl border border-indigo-500/40 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-2xl animate-pop-in flex items-center space-x-2 pointer-events-none">
               <span>{showAspectToast}</span>
+            </div>
+          )}
+
+          {/* Resume Playback HUD Toast */}
+          {showResumeToast && initialTime > 5 && (
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-black/90 backdrop-blur-xl border border-indigo-500/40 text-white text-xs px-3.5 py-1.5 rounded-2xl shadow-2xl animate-pop-in flex items-center space-x-2.5 pointer-events-auto">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+              <span className="text-gray-200 font-medium">
+                Resumed from <span className="font-mono text-indigo-300 font-semibold">{formatTimestamp(initialTime)}</span>
+              </span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  seekTo(0);
+                  setShowResumeToast(false);
+                }}
+                className="px-2 py-0.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-[10px] font-semibold transition-colors shrink-0"
+              >
+                Start Over
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowResumeToast(false);
+                }}
+                className="text-gray-400 hover:text-white text-xs pl-1"
+              >
+                ✕
+              </button>
             </div>
           )}
 

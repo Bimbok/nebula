@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { GoogleDriveFile, TokenClient } from './types';
 import { fetchVideosPage } from './services/googleDriveService';
 import Header from './components/Header';
 import Login from './components/Login';
 import VideoGrid from './components/VideoGrid';
 import VideoPlayer from './components/VideoPlayer';
+import ContinueWatching from './components/ContinueWatching';
 import Loader from './components/Loader';
 import MascotLogo from './components/MascotLogo';
 import { GOOGLE_API_KEY, GOOGLE_CLIENT_ID, SCOPES } from './constants';
@@ -21,6 +22,7 @@ const App: React.FC = () => {
   const [isSignedIn, setIsSignedIn] = useState<boolean>(false);
   const [videos, setVideos] = useState<GoogleDriveFile[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<GoogleDriveFile | null>(null);
+  const [initialResumeTime, setInitialResumeTime] = useState<number | undefined>(undefined);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [isGapiLoaded, setIsGapiLoaded] = useState(false);
@@ -28,6 +30,7 @@ const App: React.FC = () => {
   const [configError, setConfigError] = useState<string | null>(null);
   const [activeClientId, setActiveClientId] = useState<string>(GOOGLE_CLIENT_ID);
   const [activeApiKey, setActiveApiKey] = useState<string>(GOOGLE_API_KEY);
+  const tokenRefreshTimeoutRef = useRef<any>(null);
 
   useEffect(() => {
     let scriptGapi: HTMLScriptElement | null = null;
@@ -130,6 +133,12 @@ const App: React.FC = () => {
       setNextPageToken(result.nextPageToken);
     } catch (err: any) {
       console.error("Error fetching videos:", err);
+      // If 401 Unauthorized, automatically request silent token renewal
+      if ((err?.status === 401 || err?.result?.error?.code === 401) && window.tokenClient) {
+        console.log('[Nebula Auth] Google API 401 detected, attempting silent token renewal...');
+        window.tokenClient.requestAccessToken({ prompt: '' });
+        return;
+      }
       const detail = err?.result?.error?.message || err?.message || 'Failed to fetch videos from Google Drive.';
       setError(`Failed to fetch videos: ${detail}`);
     } finally {
@@ -172,6 +181,34 @@ const App: React.FC = () => {
     return () => observer.disconnect();
   }, [nextPageToken, isLoadingMore, loadMoreVideos]);
 
+  // Token persistence and silent refresh manager
+  const persistTokenSession = useCallback((tokenResponse: any) => {
+    window.gapi.client.setToken(tokenResponse);
+    setIsSignedIn(true);
+
+    const expiresIn = tokenResponse.expires_in ? parseInt(tokenResponse.expires_in, 10) : 3600;
+    const expiresAt = Date.now() + (expiresIn - 60) * 1000;
+
+    // Save token and persistent login flag
+    localStorage.setItem('gdrive_logged_in', 'true');
+    localStorage.setItem(
+      'gdrive_oauth_token',
+      JSON.stringify({ ...tokenResponse, expires_at: expiresAt })
+    );
+
+    // Save cookie with 30-day persistence (2592000s) for Smart TV & LAN streaming stability
+    document.cookie = `gdrive_token=${encodeURIComponent(tokenResponse.access_token)}; max-age=2592000; path=/; SameSite=Lax`;
+
+    // Schedule background auto-refresh 5 minutes before expiration
+    if (tokenRefreshTimeoutRef.current) clearTimeout(tokenRefreshTimeoutRef.current);
+    const refreshMs = Math.max(60000, (expiresIn - 300) * 1000);
+    tokenRefreshTimeoutRef.current = setTimeout(() => {
+      if (window.tokenClient) {
+        console.log('[Nebula Auth] Background silent token refresh triggered');
+        window.tokenClient.requestAccessToken({ prompt: '' });
+      }
+    }, refreshMs);
+  }, []);
 
   // Restore persistent login session from URL query param / cookie / localStorage
   useEffect(() => {
@@ -182,10 +219,11 @@ const App: React.FC = () => {
       if (urlToken) {
         const tokenObj = {
           access_token: urlToken,
-          expires_at: Date.now() + 3600 * 1000,
+          expires_at: Date.now() + 30 * 24 * 3600 * 1000, // 30-day persistence for LAN/TV
         };
+        localStorage.setItem('gdrive_logged_in', 'true');
         localStorage.setItem('gdrive_oauth_token', JSON.stringify(tokenObj));
-        document.cookie = `gdrive_token=${encodeURIComponent(urlToken)}; max-age=3600; path=/; SameSite=Lax`;
+        document.cookie = `gdrive_token=${encodeURIComponent(urlToken)}; max-age=2592000; path=/; SameSite=Lax`;
         // Clean URL so token is not exposed in browser address bar
         window.history.replaceState({}, document.title, window.location.pathname);
         window.gapi.client.setToken(tokenObj);
@@ -196,21 +234,44 @@ const App: React.FC = () => {
 
       // 2. Check localStorage
       const savedTokenStr = localStorage.getItem('gdrive_oauth_token');
+      const wasLoggedIn = localStorage.getItem('gdrive_logged_in') === 'true';
+
       if (savedTokenStr) {
         try {
           const parsed = JSON.parse(savedTokenStr);
-          if (parsed?.access_token && parsed?.expires_at && parsed.expires_at > Date.now()) {
+          if (parsed?.access_token) {
             window.gapi.client.setToken(parsed);
             setIsSignedIn(true);
-            fetchUserVideos();
-            return;
-          } else {
-            localStorage.removeItem('gdrive_oauth_token');
-            document.cookie = 'gdrive_token=; max-age=0; path=/;';
+
+            // If token has more than 2 minutes remaining, use immediately
+            if (parsed.expires_at && parsed.expires_at > Date.now() + 120000) {
+              fetchUserVideos();
+
+              // Schedule background refresh before it expires
+              const remainingMs = Math.max(60000, parsed.expires_at - Date.now() - 300000);
+              if (tokenRefreshTimeoutRef.current) clearTimeout(tokenRefreshTimeoutRef.current);
+              tokenRefreshTimeoutRef.current = setTimeout(() => {
+                if (window.tokenClient) {
+                  window.tokenClient.requestAccessToken({ prompt: '' });
+                }
+              }, remainingMs);
+              return;
+            } else {
+              // Token is near or past expiration: load videos and trigger silent renewal as soon as GSI is ready
+              fetchUserVideos().catch(() => {});
+              if (window.tokenClient) {
+                window.tokenClient.requestAccessToken({ prompt: '' });
+              }
+              return;
+            }
           }
         } catch (e) {
           console.error('Failed to parse saved session token', e);
         }
+      } else if (wasLoggedIn && window.tokenClient) {
+        // Was previously signed in: silent auto-login
+        window.tokenClient.requestAccessToken({ prompt: '' });
+        return;
       }
     }
   }, [isGapiLoaded, fetchUserVideos]);
@@ -223,31 +284,39 @@ const App: React.FC = () => {
           scope: SCOPES,
           callback: async (tokenResponse: any) => {
             if (tokenResponse.error) {
-              setError(`Google Sign-In Error: ${tokenResponse.error_description || tokenResponse.error}`);
+              console.warn('Google Sign-In notice:', tokenResponse.error);
+              if (tokenResponse.error !== 'interaction_required' && tokenResponse.error !== 'immediate_failed') {
+                setError(`Google Sign-In Error: ${tokenResponse.error_description || tokenResponse.error}`);
+              }
               setIsLoading(false);
               return;
             }
             if (tokenResponse.access_token) {
-              window.gapi.client.setToken(tokenResponse);
-
-              // Persist token in localStorage and cookies for seamless session retention
-              const expiresIn = tokenResponse.expires_in ? parseInt(tokenResponse.expires_in, 10) : 3600;
-              const expiresAt = Date.now() + (expiresIn - 60) * 1000;
-              localStorage.setItem(
-                'gdrive_oauth_token',
-                JSON.stringify({ ...tokenResponse, expires_at: expiresAt })
-              );
-              document.cookie = `gdrive_token=${encodeURIComponent(tokenResponse.access_token)}; max-age=${expiresIn}; path=/; SameSite=Lax`;
-
-              setIsSignedIn(true);
+              persistTokenSession(tokenResponse);
               await fetchUserVideos();
             }
           },
         });
 
-        // If not restoring an existing token, finished initial loading
+        // Check if we need to perform silent renewal for an existing/past session
         const savedTokenStr = localStorage.getItem('gdrive_oauth_token');
-        if (!savedTokenStr) {
+        const wasLoggedIn = localStorage.getItem('gdrive_logged_in') === 'true';
+
+        if (wasLoggedIn) {
+          let needsRefresh = true;
+          if (savedTokenStr) {
+            try {
+              const parsed = JSON.parse(savedTokenStr);
+              if (parsed?.expires_at && parsed.expires_at > Date.now() + 180000) {
+                needsRefresh = false;
+              }
+            } catch (e) {}
+          }
+          if (needsRefresh) {
+            console.log('[Nebula Auth] Performing silent session renewal on startup');
+            window.tokenClient.requestAccessToken({ prompt: '' });
+          }
+        } else if (!savedTokenStr) {
           setIsLoading(false);
         }
       } catch (err) {
@@ -256,7 +325,7 @@ const App: React.FC = () => {
         setIsLoading(false);
       }
     }
-  }, [isGapiLoaded, isGsiLoaded, activeClientId, fetchUserVideos]);
+  }, [isGapiLoaded, isGsiLoaded, activeClientId, fetchUserVideos, persistTokenSession]);
 
   const handleLogin = () => {
     if (!window.tokenClient) {
@@ -272,8 +341,10 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
+    if (tokenRefreshTimeoutRef.current) clearTimeout(tokenRefreshTimeoutRef.current);
     // Clear cookie and localStorage session
     localStorage.removeItem('gdrive_oauth_token');
+    localStorage.removeItem('gdrive_logged_in');
     document.cookie = 'gdrive_token=; max-age=0; path=/;';
 
     const token = window.gapi?.client?.getToken();
@@ -288,15 +359,18 @@ const App: React.FC = () => {
     setIsSignedIn(false);
     setVideos([]);
     setSelectedVideo(null);
+    setInitialResumeTime(undefined);
     setError(null);
   };
 
-  const handleSelectVideo = (video: GoogleDriveFile) => {
+  const handleSelectVideo = (video: GoogleDriveFile, resumeTime?: number) => {
     setSelectedVideo(video);
+    setInitialResumeTime(resumeTime);
   };
 
   const handleClosePlayer = () => {
     setSelectedVideo(null);
+    setInitialResumeTime(undefined);
   };
 
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -419,6 +493,11 @@ const App: React.FC = () => {
               </div>
             </div>
 
+            {/* Continue Watching Carousel (when not filtering) */}
+            {!searchQuery.trim() && (
+              <ContinueWatching onSelectVideo={handleSelectVideo} />
+            )}
+
             <VideoGrid videos={filteredVideos} onSelectVideo={handleSelectVideo} />
 
             {/* Infinite Scroll / Lazy Load Trigger */}
@@ -450,7 +529,11 @@ const App: React.FC = () => {
       </main>
 
       {selectedVideo && (
-        <VideoPlayer video={selectedVideo} onClose={handleClosePlayer} />
+        <VideoPlayer
+          video={selectedVideo}
+          initialSeekTime={initialResumeTime}
+          onClose={handleClosePlayer}
+        />
       )}
     </div>
   );
