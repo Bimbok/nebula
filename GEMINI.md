@@ -93,6 +93,18 @@ Google Drive API (alt=media)
 
 ---
 
+## 6. Discord Gateway Rich Presence
+
+* **Any-Device Gateway Bridge:**
+  * Connects directly to Discord's live Gateway WebSocket (`wss://gateway.discord.gg/?v=10`) using user authentication so presence broadcasts from anywhere (Desktop, Phone, Tablet, Smart TV, Render cloud).
+  * Automatically handles Gateway heartbeats and Opcode 3 `PRESENCE_UPDATE` payloads.
+  * Synchronizes Discord Custom Status (`PATCH /api/v9/users/@me/settings`) with `🎬 Watching <Title>` and emoji indicators.
+* **Intelligent Media Title Parser:**
+  * Decomposes arbitrary torrent/scene filenames (e.g. `Dark.S01E10.1080p.NF.WEB-DL.mkv`) into clean show names (`Dark`) and episode descriptors (`Season 1 • Episode 10`).
+  * Live remaining time calculation, play/pause state reflection, and automatic activity clearing on player exit.
+
+---
+
 ## 6. Building and Running
 
 **Prerequisites:**

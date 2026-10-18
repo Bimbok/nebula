@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { GoogleDriveFile, AudioTrackInfo, SubtitleTrackInfo } from '../types';
 import Loader from './Loader';
 import { getWatchProgress, saveWatchProgress } from '../services/watchProgressService';
+import { discordPresenceService } from '../services/discordPresenceService';
 
 interface VideoPlayerProps {
   video: GoogleDriveFile;
@@ -650,8 +651,15 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
           videoRef.current.currentTime = clamped;
         }
       }
+
+      discordPresenceService.updatePlayback({
+        fileName: video.name,
+        currentTime: clamped,
+        duration: knownTotalDuration,
+        isPlaying: isPlaying,
+      });
     },
-    [knownTotalDuration, selectedAudioIndex, persistCurrentProgress]
+    [knownTotalDuration, selectedAudioIndex, persistCurrentProgress, video.name, isPlaying]
   );
 
   // Scrubber Hover Tooltip logic
@@ -814,12 +822,24 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     setIsBuffering(false);
     setIsPlaying(true);
     resetControlsTimer(false);
+    discordPresenceService.updatePlayback({
+      fileName: video.name,
+      currentTime: resumeTime + (videoRef.current?.currentTime || 0),
+      duration: knownTotalDuration,
+      isPlaying: true,
+    });
   };
 
   const handlePause = () => {
     setIsPlaying(false);
     if (videoRef.current) {
       persistCurrentProgress(resumeTime + videoRef.current.currentTime);
+      discordPresenceService.updatePlayback({
+        fileName: video.name,
+        currentTime: resumeTime + videoRef.current.currentTime,
+        duration: knownTotalDuration,
+        isPlaying: false,
+      });
     }
   };
 
@@ -850,6 +870,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       }
     };
   }, [persistCurrentProgress, resumeTime]);
+
+  // Clear Discord Presence when video player is closed
+  useEffect(() => {
+    return () => {
+      discordPresenceService.clearPlayback();
+    };
+  }, []);
 
   const handleError = () => {
     setIsBuffering(false);
