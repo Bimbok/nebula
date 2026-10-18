@@ -219,29 +219,55 @@ const DiscordPresenceModal: React.FC<DiscordPresenceModalProps> = ({ isOpen, onC
 
           {/* Guide Dropdown */}
           {showGuide && (
-            <div className="bg-[#08090e]/90 border border-indigo-500/30 rounded-2xl p-3.5 text-xs text-gray-300 space-y-2.5 animate-pop-in">
-              <p className="text-[11px] text-indigo-300 font-semibold">How to get your Discord token:</p>
-              <ol className="list-decimal list-inside space-y-1 text-[11px] text-gray-400 leading-relaxed">
-                <li>
-                  Open <span className="text-white font-mono">discord.com/app</span> in Chrome/Firefox.
-                </li>
-                <li>
-                  Press <kbd className="bg-white/10 px-1 py-0.5 rounded text-white">Ctrl + Shift + I</kbd> to open Developer Tools.
-                </li>
-                <li>Go to the <b>Console</b> tab and paste this one-liner script:</li>
-              </ol>
-              <div className="relative bg-black/60 p-2.5 rounded-xl border border-white/10 font-mono text-[10px] text-indigo-300 break-all flex items-center justify-between">
-                <span>copy(window.webpackChunkdiscord_app.push([[''],{},e=&gt;...]))</span>
-                <button
-                  type="button"
-                  onClick={handleCopyScript}
-                  className="ml-2 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-sans text-[10px] shrink-0 transition-colors shadow"
-                >
-                  {copiedCode ? 'Copied!' : 'Copy Script'}
-                </button>
+            <div className="bg-[#08090e]/95 border border-indigo-500/30 rounded-2xl p-4 text-xs text-gray-300 space-y-3 animate-pop-in shadow-xl">
+              <div className="flex items-center justify-between border-b border-white/[0.06] pb-2">
+                <p className="text-xs text-indigo-300 font-semibold flex items-center space-x-1.5">
+                  <span>🔑</span>
+                  <span>How to get your Discord token</span>
+                </p>
+                <span className="text-[10px] text-gray-400 font-mono">2 Easy Methods</span>
               </div>
-              <p className="text-[10px] text-gray-500 leading-normal">
-                Your token will be instantly copied to your clipboard. Paste it above. Stored only in your local browser storage.
+
+              {/* Method 1: Console */}
+              <div className="space-y-1.5">
+                <span className="text-[11px] font-semibold text-white">Method 1: Console (Quickest)</span>
+                <ol className="list-decimal list-inside space-y-1 text-[11px] text-gray-400 leading-relaxed">
+                  <li>
+                    Open <span className="text-white font-mono">discord.com/app</span> in browser.
+                  </li>
+                  <li>
+                    Press <kbd className="bg-white/10 px-1.5 py-0.5 rounded text-white text-[10px]">Ctrl + Shift + I</kbd> and go to the <b>Console</b> tab.
+                  </li>
+                  <li>
+                    If Discord blocks pasting: type <code className="bg-indigo-500/20 text-indigo-200 px-1 py-0.5 rounded font-mono font-bold">allow pasting</code> and press <kbd className="bg-white/10 px-1 py-0.5 rounded text-white text-[10px]">Enter</kbd>.
+                  </li>
+                  <li>Paste this script and hit Enter:</li>
+                </ol>
+                <div className="relative bg-black/60 p-2 rounded-xl border border-white/10 font-mono text-[10px] text-indigo-300 break-all flex items-center justify-between">
+                  <span className="truncate mr-2">copy(window.webpackChunkdiscord_app.push(...))</span>
+                  <button
+                    type="button"
+                    onClick={handleCopyScript}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-sans text-[10px] font-medium shrink-0 transition-colors shadow"
+                  >
+                    {copiedCode ? 'Copied!' : 'Copy Script'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Method 2: Network Tab */}
+              <div className="border-t border-white/[0.06] pt-2 space-y-1">
+                <span className="text-[11px] font-semibold text-white">Method 2: Network Tab (No Code Needed)</span>
+                <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-gray-400 leading-relaxed">
+                  <li>In DevTools (<kbd className="bg-white/10 px-1 py-0.5 rounded text-white text-[9px]">Ctrl+Shift+I</kbd>), click the <b>Network</b> tab.</li>
+                  <li>Type <code className="text-white font-mono">api</code> in the filter box.</li>
+                  <li>Click on any channel in Discord, then click any request in the list.</li>
+                  <li>Under <b>Request Headers</b>, find <code className="text-emerald-400 font-mono">authorization</code> and copy its value.</li>
+                </ol>
+              </div>
+
+              <p className="text-[10px] text-gray-500 italic">
+                🔒 Your token is stored only in your local browser storage and is never uploaded anywhere.
               </p>
             </div>
           )}
