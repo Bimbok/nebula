@@ -253,12 +253,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
       ? parseInt(video.videoMediaMetadata.durationMillis, 10) / 1000
       : 0;
 
+  const [audioMode, setAudioMode] = useState<'raw' | 'transcode'>('raw');
+
   // Stream URL calculation
   const targetMime = mimeOverride || video.mimeType || 'video/mp4';
 
   let currentStreamUrl = `/api/stream?fileId=${video.id}&token=${encodeURIComponent(token)}`;
   if (selectedAudioIndex !== 'default') {
-    currentStreamUrl += `&audioIndex=${selectedAudioIndex}&startTime=${Math.floor(resumeTime)}`;
+    currentStreamUrl += `&audioIndex=${selectedAudioIndex}&startTime=${Math.floor(resumeTime)}&mode=${audioMode}`;
   } else {
     currentStreamUrl += `&mimeType=${encodeURIComponent(targetMime)}`;
   }
@@ -821,8 +823,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                   </span>
                 )}
                 {selectedAudioIndex !== 'default' && (
-                  <span className="bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-500/30">
-                    320k Remux
+                  <span className={`px-1.5 py-0.5 rounded border ${
+                    audioMode === 'raw'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                      : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
+                  }`}>
+                    {audioMode === 'raw' ? '⚡ Raw Audio (0 Lag)' : '320k Remux'}
                   </span>
                 )}
                 <span>HTTP Range</span>
@@ -965,10 +971,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
               <div className="flex flex-wrap items-center justify-center gap-2.5 w-full">
                 {audioTracks.length > 0 && (
                   <button
-                    onClick={() => handleAudioTrackChange('0')}
+                    onClick={() => {
+                      setAudioMode('transcode');
+                      setPlaybackError(null);
+                    }}
                     className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium transition-all shadow"
                   >
-                    Play with 320k Audio Remux
+                    Switch to AAC 320k Compatibility Remux
                   </button>
                 )}
                 <button
@@ -1155,6 +1164,30 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                     ))}
                   </select>
                 </div>
+
+                {/* Audio Mode Toggle: ⚡ Raw Audio (0 Latency) vs AAC 320k */}
+                {selectedAudioIndex !== 'default' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResumeTime(currentTime);
+                      setAudioMode((prev) => (prev === 'raw' ? 'transcode' : 'raw'));
+                      setIsBuffering(true);
+                    }}
+                    className={`px-2 py-1 rounded-xl text-[10px] font-mono font-semibold transition-all border ${
+                      audioMode === 'raw'
+                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.15)] hover:bg-emerald-500/25'
+                        : 'bg-indigo-500/15 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/25'
+                    }`}
+                    title={
+                      audioMode === 'raw'
+                        ? 'Using 100% Raw Audio Passthrough (Zero CPU, Zero Latency). Click for AAC Remux.'
+                        : 'Using AAC 320k Compatibility Remux. Click for Raw Passthrough.'
+                    }
+                  >
+                    {audioMode === 'raw' ? '⚡ Raw Audio' : 'AAC 320k'}
+                  </button>
+                )}
 
                 {/* Subtitle Selector */}
                 <div className="flex items-center space-x-1 bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.06] rounded-xl px-2 py-1 transition-colors">
