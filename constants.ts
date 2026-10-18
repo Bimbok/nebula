@@ -3,6 +3,15 @@
 // You can get these from the Google Cloud Console: https://console.cloud.google.com/
 
 const getEnvVar = (key: string): string => {
+  if (typeof window !== 'undefined') {
+    const win = window as any;
+    if (win.NEBULA_CONFIG && win.NEBULA_CONFIG[key]) {
+      return win.NEBULA_CONFIG[key];
+    }
+    if (win.process?.env && win.process.env[key]) {
+      return win.process.env[key];
+    }
+  }
   if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
     const metaEnv = (import.meta as any).env;
     if (metaEnv[key]) return metaEnv[key];

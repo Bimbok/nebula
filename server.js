@@ -61,6 +61,17 @@ const handler = async (req, res, next) => {
     res.end();
     return;
   }
+  if (rawUrl.startsWith("/api/config")) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-cache");
+    res.end(JSON.stringify({
+      GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "",
+      GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || ""
+    }));
+    return;
+  }
   if (rawUrl.startsWith("/api/tracks")) {
     try {
       const url = new URL(rawUrl, `http://${req.headers.host || "localhost:3000"}`);
@@ -692,6 +703,31 @@ function serveStatic(req, res) {
     res.statusCode = 404;
     res.end("Not Found. Please run `npm run build` first.");
     return;
+  }
+  if (filePath.endsWith("index.html")) {
+    try {
+      let html = fs.readFileSync(filePath, "utf-8");
+      const clientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "";
+      const apiKey = process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || "";
+      const configScript = `
+    <script>
+      window.process = window.process || { env: {} };
+      window.process.env = window.process.env || {};
+      window.process.env.GOOGLE_CLIENT_ID = ${JSON.stringify(clientId)};
+      window.process.env.GOOGLE_API_KEY = ${JSON.stringify(apiKey)};
+      window.NEBULA_CONFIG = {
+        GOOGLE_CLIENT_ID: ${JSON.stringify(clientId)},
+        GOOGLE_API_KEY: ${JSON.stringify(apiKey)}
+      };
+    </script>`;
+      html = html.replace("</head>", `${configScript}
+  </head>`);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.end(html);
+      return;
+    } catch (e) {
+    }
   }
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || "application/octet-stream";

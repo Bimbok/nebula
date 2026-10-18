@@ -26,66 +26,94 @@ const App: React.FC = () => {
   const [isGapiLoaded, setIsGapiLoaded] = useState(false);
   const [isGsiLoaded, setIsGsiLoaded] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [activeClientId, setActiveClientId] = useState<string>(GOOGLE_CLIENT_ID);
+  const [activeApiKey, setActiveApiKey] = useState<string>(GOOGLE_API_KEY);
 
   useEffect(() => {
-    if (!GOOGLE_CLIENT_ID) {
-      setConfigError("Configuration error: Google Client ID is missing. Please set GOOGLE_CLIENT_ID in your .env.local file.");
-      setIsLoading(false);
-      return;
-    }
-    
-    // Check for placeholder values
-    if (GOOGLE_CLIENT_ID.includes('YOUR_') || (GOOGLE_API_KEY && GOOGLE_API_KEY.includes('YOUR_'))) {
+    let scriptGapi: HTMLScriptElement | null = null;
+    let scriptGsi: HTMLScriptElement | null = null;
+
+    const initAuthFlow = async () => {
+      let clientId = GOOGLE_CLIENT_ID || (window as any).NEBULA_CONFIG?.GOOGLE_CLIENT_ID || (window as any).process?.env?.GOOGLE_CLIENT_ID;
+      let apiKey = GOOGLE_API_KEY || (window as any).NEBULA_CONFIG?.GOOGLE_API_KEY || (window as any).process?.env?.GOOGLE_API_KEY;
+
+      // If client ID was not statically baked, dynamically fetch from runtime /api/config
+      if (!clientId) {
+        try {
+          const res = await fetch('/api/config');
+          if (res.ok) {
+            const data = await res.json();
+            if (data.GOOGLE_CLIENT_ID) {
+              clientId = data.GOOGLE_CLIENT_ID;
+              apiKey = data.GOOGLE_API_KEY || apiKey;
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (!clientId) {
+        setConfigError("Configuration error: Google Client ID is missing. Please set GOOGLE_CLIENT_ID in your Render environment variables or .env.local file.");
+        setIsLoading(false);
+        return;
+      }
+
+      if (clientId.includes('YOUR_') || (apiKey && apiKey.includes('YOUR_'))) {
         setConfigError("Configuration error: Please replace placeholder Client ID with your actual credentials.");
         setIsLoading(false);
         return;
-    }
+      }
 
-    const scriptGapi = document.createElement('script');
-    scriptGapi.src = 'https://apis.google.com/js/api.js';
-    scriptGapi.async = true;
-    scriptGapi.defer = true;
-    scriptGapi.onload = () => {
-      window.gapi.load('client', () => {
-        const initConfig: { discoveryDocs: string[]; apiKey?: string } = {
-          discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-        };
-        if (GOOGLE_API_KEY && GOOGLE_API_KEY.trim().length > 0) {
-          initConfig.apiKey = GOOGLE_API_KEY.trim();
-        }
+      setActiveClientId(clientId);
+      if (apiKey) setActiveApiKey(apiKey);
 
-        window.gapi.client.init(initConfig).then(() => {
-          setIsGapiLoaded(true);
-        }).catch((err: any) => {
+      scriptGapi = document.createElement('script');
+      scriptGapi.src = 'https://apis.google.com/js/api.js';
+      scriptGapi.async = true;
+      scriptGapi.defer = true;
+      scriptGapi.onload = () => {
+        window.gapi.load('client', () => {
+          const initConfig: { discoveryDocs: string[]; apiKey?: string } = {
+            discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+          };
+          if (apiKey && apiKey.trim().length > 0) {
+            initConfig.apiKey = apiKey.trim();
+          }
+
+          window.gapi.client.init(initConfig).then(() => {
+            setIsGapiLoaded(true);
+          }).catch((err: any) => {
             console.error("Error initializing gapi client:", err);
             const detailMsg = err?.error?.message || err?.details || (typeof err === 'object' ? JSON.stringify(err) : String(err));
             setError(`Failed to initialize Google API client (${detailMsg}). Ensure Google Drive API is enabled in your Google Cloud Console.`);
             setIsLoading(false);
+          });
         });
-      });
-    };
-    scriptGapi.onerror = () => {
+      };
+      scriptGapi.onerror = () => {
         setError("Failed to load Google API script. Please check your network connection and ad-blockers.");
         setIsLoading(false);
-    }
-    document.body.appendChild(scriptGapi);
+      };
+      document.body.appendChild(scriptGapi);
 
-    const scriptGsi = document.createElement('script');
-    scriptGsi.src = 'https://accounts.google.com/gsi/client';
-    scriptGsi.async = true;
-    scriptGsi.defer = true;
-    scriptGsi.onload = () => {
+      scriptGsi = document.createElement('script');
+      scriptGsi.src = 'https://accounts.google.com/gsi/client';
+      scriptGsi.async = true;
+      scriptGsi.defer = true;
+      scriptGsi.onload = () => {
         setIsGsiLoaded(true);
-    };
-    scriptGsi.onerror = () => {
+      };
+      scriptGsi.onerror = () => {
         setError("Failed to load Google Sign-In script. Please check your network connection and ad-blockers.");
         setIsLoading(false);
-    }
-    document.body.appendChild(scriptGsi);
+      };
+      document.body.appendChild(scriptGsi);
+    };
+
+    initAuthFlow();
 
     return () => {
-        if (document.body.contains(scriptGapi)) document.body.removeChild(scriptGapi);
-        if (document.body.contains(scriptGsi)) document.body.removeChild(scriptGsi);
+      if (scriptGapi && document.body.contains(scriptGapi)) document.body.removeChild(scriptGapi);
+      if (scriptGsi && document.body.contains(scriptGsi)) document.body.removeChild(scriptGsi);
     };
   }, []);
 
@@ -188,10 +216,10 @@ const App: React.FC = () => {
   }, [isGapiLoaded, fetchUserVideos]);
 
   useEffect(() => {
-    if (isGapiLoaded && isGsiLoaded) {
+    if (isGapiLoaded && isGsiLoaded && activeClientId) {
       try {
         window.tokenClient = window.google.accounts.oauth2.initTokenClient({
-          client_id: GOOGLE_CLIENT_ID,
+          client_id: activeClientId,
           scope: SCOPES,
           callback: async (tokenResponse: any) => {
             if (tokenResponse.error) {
@@ -228,7 +256,7 @@ const App: React.FC = () => {
         setIsLoading(false);
       }
     }
-  }, [isGapiLoaded, isGsiLoaded, fetchUserVideos]);
+  }, [isGapiLoaded, isGsiLoaded, activeClientId, fetchUserVideos]);
 
   const handleLogin = () => {
     if (!window.tokenClient) {

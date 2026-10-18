@@ -73,6 +73,21 @@ function streamProxyPlugin() {
     }
 
     // -------------------------------------------------------------
+    // 0. /api/config : Runtime config endpoint
+    // -------------------------------------------------------------
+    if (rawUrl.startsWith('/api/config')) {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.end(JSON.stringify({
+        GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '',
+        GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || '',
+      }));
+      return;
+    }
+
+    // -------------------------------------------------------------
     // 1. /api/tracks : Probe audio and subtitle streams using ffprobe
     // -------------------------------------------------------------
     if (rawUrl.startsWith('/api/tracks')) {
