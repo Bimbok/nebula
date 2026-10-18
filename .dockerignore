@@ -1,0 +1,9 @@
+node_modules
+.cache
+dist
+.git
+.github
+*.log
+.env
+.env.local
+Screenshot*

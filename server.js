@@ -1,0 +1,722 @@
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn, execFile } from "node:child_process";
+import { Readable } from "node:stream";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const trackMetadataCache = /* @__PURE__ */ new Map();
+const metaCacheDir = path.resolve(".cache", "metadata");
+if (!fs.existsSync(metaCacheDir)) {
+  try {
+    fs.mkdirSync(metaCacheDir, { recursive: true });
+  } catch (e) {
+  }
+}
+function parseDuration(val) {
+  if (!val) return 0;
+  if (typeof val === "number") return isFinite(val) && !isNaN(val) ? val : 0;
+  if (typeof val !== "string") return 0;
+  val = val.trim();
+  if (val.includes(":")) {
+    const parts = val.split(":");
+    if (parts.length === 3) {
+      return (parseFloat(parts[0]) || 0) * 3600 + (parseFloat(parts[1]) || 0) * 60 + (parseFloat(parts[2]) || 0);
+    }
+    if (parts.length === 2) {
+      return (parseFloat(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
+    }
+  }
+  const n = parseFloat(val);
+  return isNaN(n) ? 0 : n;
+}
+function isUsableWebVtt(contents) {
+  return contents.includes(Buffer.from("-->"));
+}
+function getAudioTrackCodec(fileId, audioIndex) {
+  const cached = trackMetadataCache.get(fileId);
+  if (cached?.audioTracks && cached.audioTracks[audioIndex]) {
+    return cached.audioTracks[audioIndex].codec;
+  }
+  const metaCacheFile = path.join(metaCacheDir, `${fileId}.json`);
+  if (fs.existsSync(metaCacheFile)) {
+    try {
+      const fileData = JSON.parse(fs.readFileSync(metaCacheFile, "utf8"));
+      if (fileData.audioTracks && fileData.audioTracks[audioIndex]) {
+        return fileData.audioTracks[audioIndex].codec;
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+const handler = async (req, res, next) => {
+  const rawUrl = req.url || "";
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    res.end();
+    return;
+  }
+  if (rawUrl.startsWith("/api/tracks")) {
+    try {
+      const url = new URL(rawUrl, `http://${req.headers.host || "localhost:3000"}`);
+      const fileId = url.searchParams.get("fileId");
+      let token = url.searchParams.get("token");
+      if (!token && req.headers.cookie) {
+        const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
+        if (match) token = match[1].trim();
+      }
+      if (!token && req.headers.authorization) {
+        token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
+      }
+      if (!fileId || !token) {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.end(JSON.stringify({ error: "Missing fileId or token" }));
+        return;
+      }
+      const cached = trackMetadataCache.get(fileId);
+      if (cached && Date.now() - cached.timestamp < 3600 * 24 * 1e3) {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.end(JSON.stringify({
+          audioTracks: cached.audioTracks,
+          subtitleTracks: cached.subtitleTracks,
+          duration: cached.duration || 0
+        }));
+        return;
+      }
+      const metaCacheFile = path.join(metaCacheDir, `${fileId}.json`);
+      if (fs.existsSync(metaCacheFile)) {
+        try {
+          const diskContent = fs.readFileSync(metaCacheFile, "utf-8");
+          const parsed = JSON.parse(diskContent);
+          if (parsed && (parsed.audioTracks || parsed.duration > 0)) {
+            trackMetadataCache.set(fileId, {
+              audioTracks: parsed.audioTracks || [],
+              subtitleTracks: parsed.subtitleTracks || [],
+              duration: parsed.duration || 0,
+              timestamp: Date.now()
+            });
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(diskContent);
+            return;
+          }
+        } catch (diskErr) {
+          console.warn("[metadata cache read error]", diskErr);
+        }
+      }
+      const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+      const headersParam = `Authorization: Bearer ${token}\r
+`;
+      execFile(
+        "ffprobe",
+        [
+          "-headers",
+          headersParam,
+          "-seekable",
+          "1",
+          "-multiple_requests",
+          "1",
+          "-v",
+          "quiet",
+          "-print_format",
+          "json",
+          "-show_streams",
+          "-show_format",
+          driveUrl
+        ],
+        { timeout: 25e3, maxBuffer: 15 * 1024 * 1024 },
+        (err, stdout) => {
+          if (err || !stdout) {
+            console.warn("[ffprobe] Could not probe streams:", err?.message);
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify({ audioTracks: [], subtitleTracks: [], duration: 0 }));
+            return;
+          }
+          try {
+            const data = JSON.parse(stdout);
+            const streams = data.streams || [];
+            const format = data.format || {};
+            let probedDuration = parseDuration(format.duration);
+            if (probedDuration <= 0) {
+              for (const s of streams) {
+                const d = parseDuration(s.duration) || parseDuration(s.tags?.DURATION) || parseDuration(s.tags?.duration) || parseDuration(s.tags?.["DURATION-eng"]) || parseDuration(s.tags?.["DURATION-und"]);
+                if (d > probedDuration) probedDuration = d;
+              }
+            }
+            if (probedDuration <= 0) {
+              const formatTagDur = parseDuration(format.tags?.DURATION) || parseDuration(format.tags?.duration);
+              if (formatTagDur > probedDuration) probedDuration = formatTagDur;
+            }
+            const audioStreams = streams.filter((s) => s.codec_type === "audio");
+            const subtitleStreams = streams.filter((s) => s.codec_type === "subtitle");
+            const audioTracks = audioStreams.map((s, idx) => {
+              const lang = s.tags?.language || s.tags?.LANGUAGE || "und";
+              const title = s.tags?.title || s.tags?.TITLE || `Track ${idx + 1}`;
+              const channels = s.channels ? `${s.channels}ch` : "";
+              const codec = (s.codec_name || "").toUpperCase();
+              return {
+                id: idx,
+                streamIndex: s.index,
+                codec: s.codec_name,
+                channels: s.channels,
+                language: lang,
+                label: `${title} (${lang.toUpperCase()} \u2022 ${codec}${channels ? " \u2022 " + channels : ""})`
+              };
+            });
+            const subtitleTracks = subtitleStreams.map((s, idx) => {
+              const lang = s.tags?.language || s.tags?.LANGUAGE || "und";
+              const title = s.tags?.title || s.tags?.TITLE || `Subtitle ${idx + 1}`;
+              const codec = (s.codec_name || "").toUpperCase();
+              const isBitmap = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"].includes(s.codec_name);
+              return {
+                id: idx,
+                streamIndex: s.index,
+                codec: s.codec_name,
+                language: lang,
+                isBitmap,
+                label: `${title} (${lang.toUpperCase()} \u2022 ${codec}${isBitmap ? " [PGS Bitmap]" : ""})`
+              };
+            });
+            const metaPayload = {
+              audioTracks,
+              subtitleTracks,
+              duration: probedDuration
+            };
+            trackMetadataCache.set(fileId, { ...metaPayload, timestamp: Date.now() });
+            fs.writeFile(metaCacheFile, JSON.stringify(metaPayload), () => {
+            });
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify(metaPayload));
+          } catch (parseErr) {
+            console.error("[ffprobe parse error]:", parseErr);
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify({ audioTracks: [], subtitleTracks: [], duration: 0 }));
+          }
+        }
+      );
+    } catch (err) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+  if (rawUrl.startsWith("/api/subtitles")) {
+    try {
+      const url = new URL(rawUrl, `http://${req.headers.host || "localhost:3000"}`);
+      const fileId = url.searchParams.get("fileId");
+      const streamIndex = url.searchParams.get("streamIndex");
+      const isBitmap = url.searchParams.get("isBitmap") === "true";
+      let token = url.searchParams.get("token");
+      if (!token && req.headers.cookie) {
+        const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
+        if (match) token = match[1].trim();
+      }
+      if (!token && req.headers.authorization) {
+        token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
+      }
+      if (!fileId || !token || streamIndex === null) {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "text/plain");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.end("Missing fileId, streamIndex, or token");
+        return;
+      }
+      const cacheDir = path.resolve(".cache", "subtitles");
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
+      const cacheFile = path.join(cacheDir, `${fileId}_${streamIndex}.vtt`);
+      if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 10) {
+        const cachedSubtitles = fs.readFileSync(cacheFile);
+        if (isUsableWebVtt(cachedSubtitles)) {
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/vtt; charset=utf-8");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Cache-Control", "public, max-age=86400");
+          res.end(cachedSubtitles);
+          return;
+        }
+        fs.unlinkSync(cacheFile);
+      }
+      if (isBitmap) {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/vtt; charset=utf-8");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.end("WEBVTT\n\n00:00:01.000 --> 00:00:10.000\n[PGS/Bitmap Subtitle: Please choose a text subtitle track or upload .srt]\n\n");
+        return;
+      }
+      const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+      const headersParam = `Authorization: Bearer ${token}\r
+`;
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/vtt; charset=utf-8");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Transfer-Encoding", "chunked");
+      const ffmpeg = spawn("ffmpeg", [
+        "-loglevel",
+        "error",
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_delay_max",
+        "5",
+        "-headers",
+        headersParam,
+        "-i",
+        driveUrl,
+        "-map",
+        `0:${streamIndex}`,
+        "-c:s",
+        "webvtt",
+        "-f",
+        "webvtt",
+        "pipe:1"
+      ]);
+      const chunks = [];
+      ffmpeg.stdout.on("data", (c) => {
+        chunks.push(c);
+        res.write(c);
+        if (typeof res.flush === "function") {
+          res.flush();
+        }
+      });
+      ffmpeg.stderr.on("data", (d) => {
+        console.warn("[ffmpeg-sub]", d.toString().trim());
+      });
+      ffmpeg.on("close", (code) => {
+        const extractedSubtitles = Buffer.concat(chunks);
+        if (code === 0 && isUsableWebVtt(extractedSubtitles)) {
+          fs.writeFile(cacheFile, extractedSubtitles, () => {
+          });
+        }
+        if (!res.writableEnded) {
+          res.end();
+        }
+      });
+      const stopSubtitleExtraction = () => {
+        if (!res.writableEnded) ffmpeg.kill("SIGKILL");
+      };
+      req.on("aborted", stopSubtitleExtraction);
+      res.on("close", stopSubtitleExtraction);
+      ffmpeg.on("error", (err) => {
+        console.error("[ffmpeg subtitle extraction error]", err);
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end("WEBVTT\n\n");
+        } else if (!res.writableEnded) {
+          res.end();
+        }
+      });
+    } catch (err) {
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.setHeader("Content-Type", "text/vtt");
+        res.end("WEBVTT\n\n");
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    }
+    return;
+  }
+  if (rawUrl.startsWith("/api/thumbnail")) {
+    try {
+      const url = new URL(rawUrl, `http://${req.headers.host || "localhost:3000"}`);
+      const fileId = url.searchParams.get("fileId");
+      const googleThumbnailUrl = url.searchParams.get("url");
+      let token = url.searchParams.get("token");
+      if (!token && req.headers.cookie) {
+        const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
+        if (match) token = match[1].trim();
+      }
+      if (!token && req.headers.authorization) {
+        token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
+      }
+      if (!fileId) {
+        res.statusCode = 400;
+        res.end("Missing fileId");
+        return;
+      }
+      const cacheDir = path.resolve(".cache", "thumbnails");
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
+      const cacheFile = path.join(cacheDir, `${fileId}.jpg`);
+      if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "image/jpeg");
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        fs.createReadStream(cacheFile).pipe(res);
+        return;
+      }
+      if (googleThumbnailUrl && googleThumbnailUrl.startsWith("http")) {
+        try {
+          const thumbHeaders = {};
+          if (token) thumbHeaders["Authorization"] = `Bearer ${token}`;
+          const gRes = await fetch(googleThumbnailUrl, { headers: thumbHeaders });
+          if (gRes.ok) {
+            const buffer = Buffer.from(await gRes.arrayBuffer());
+            if (buffer.length > 500) {
+              fs.writeFileSync(cacheFile, buffer);
+              res.statusCode = 200;
+              res.setHeader("Content-Type", gRes.headers.get("content-type") || "image/jpeg");
+              res.setHeader("Cache-Control", "public, max-age=86400");
+              res.setHeader("Access-Control-Allow-Origin", "*");
+              res.end(buffer);
+              return;
+            }
+          }
+        } catch (e) {
+        }
+      }
+      if (!token) {
+        res.statusCode = 401;
+        res.end("Missing token for thumbnail generation");
+        return;
+      }
+      const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+      const headersParam = `Authorization: Bearer ${token}\r
+`;
+      const ffmpeg = spawn("ffmpeg", [
+        "-ss",
+        "00:00:10",
+        "-headers",
+        headersParam,
+        "-i",
+        driveUrl,
+        "-vframes",
+        "1",
+        "-vf",
+        "scale=640:-1",
+        "-q:v",
+        "3",
+        "-f",
+        "image2",
+        "-c:v",
+        "mjpeg",
+        "pipe:1"
+      ]);
+      const chunks = [];
+      ffmpeg.stdout.on("data", (c) => chunks.push(c));
+      ffmpeg.on("close", (code) => {
+        if (code === 0 && chunks.length > 0) {
+          const imgBuffer = Buffer.concat(chunks);
+          fs.writeFile(cacheFile, imgBuffer, () => {
+          });
+          if (!res.headersSent) {
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "image/jpeg");
+            res.setHeader("Cache-Control", "public, max-age=86400");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(imgBuffer);
+          }
+        } else {
+          const retryFfmpeg = spawn("ffmpeg", [
+            "-ss",
+            "00:00:01",
+            "-headers",
+            headersParam,
+            "-i",
+            driveUrl,
+            "-vframes",
+            "1",
+            "-vf",
+            "scale=640:-1",
+            "-q:v",
+            "3",
+            "-f",
+            "image2",
+            "-c:v",
+            "mjpeg",
+            "pipe:1"
+          ]);
+          const retryChunks = [];
+          retryFfmpeg.stdout.on("data", (c) => retryChunks.push(c));
+          retryFfmpeg.on("close", (rCode) => {
+            if (rCode === 0 && retryChunks.length > 0) {
+              const img = Buffer.concat(retryChunks);
+              fs.writeFile(cacheFile, img, () => {
+              });
+              if (!res.headersSent) {
+                res.statusCode = 200;
+                res.setHeader("Content-Type", "image/jpeg");
+                res.setHeader("Cache-Control", "public, max-age=86400");
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.end(img);
+              }
+            } else if (!res.headersSent) {
+              res.statusCode = 404;
+              res.end("Thumbnail unavailable");
+            }
+          });
+        }
+      });
+      const stopThumbnail = () => {
+        if (!res.writableEnded) ffmpeg.kill("SIGKILL");
+      };
+      req.on("aborted", stopThumbnail);
+      res.on("close", stopThumbnail);
+    } catch (err) {
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.end(err.message);
+      }
+    }
+    return;
+  }
+  if (!rawUrl.startsWith("/api/stream")) {
+    return next();
+  }
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    return next();
+  }
+  try {
+    const url = new URL(rawUrl, `http://${req.headers.host || "localhost:3000"}`);
+    const fileId = url.searchParams.get("fileId");
+    const audioIndexStr = url.searchParams.get("audioIndex");
+    const startTimeStr = url.searchParams.get("startTime");
+    let token = url.searchParams.get("token");
+    if (!token && req.headers.cookie) {
+      const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
+      if (match) token = match[1].trim();
+    }
+    if (!token && req.headers.authorization) {
+      token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
+    }
+    if (!fileId || !token) {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.end(JSON.stringify({ error: "Missing required fileId or token" }));
+      return;
+    }
+    const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    if (audioIndexStr !== null && audioIndexStr !== "") {
+      const audioIndex = parseInt(audioIndexStr, 10) || 0;
+      const startTime = startTimeStr ? Math.max(0, parseFloat(startTimeStr)) : 0;
+      const directAudioParam = url.searchParams.get("directAudio");
+      const headersParam = `Authorization: Bearer ${token}\r
+`;
+      res.statusCode = 200;
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Headers", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Transfer-Encoding", "chunked");
+      res.setHeader("Content-Type", "video/mp4");
+      let isPlayable = false;
+      if (directAudioParam === "1" || directAudioParam === "true") {
+        isPlayable = true;
+      } else if (directAudioParam === "0" || directAudioParam === "false") {
+        isPlayable = false;
+      } else {
+        const codec = getAudioTrackCodec(fileId, audioIndex);
+        if (codec && ["aac", "opus", "flac", "mp3", "vorbis", "wav"].includes(codec.toLowerCase())) {
+          isPlayable = true;
+        }
+      }
+      const audioArgs = isPlayable ? ["-c:a", "copy"] : ["-c:a", "aac", "-b:a", "320k"];
+      const ffmpegArgs = [
+        "-loglevel",
+        "error",
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_delay_max",
+        "5",
+        "-noaccurate_seek",
+        "-ss",
+        startTime.toString(),
+        "-headers",
+        headersParam,
+        "-i",
+        driveUrl,
+        "-map",
+        "0:v:0",
+        "-map",
+        `0:a:${audioIndex}`,
+        "-c:v",
+        "copy",
+        ...audioArgs,
+        "-avoid_negative_ts",
+        "make_zero",
+        "-f",
+        "mp4",
+        "-movflags",
+        "frag_keyframe+empty_moov+default_base_moof",
+        "pipe:1"
+      ];
+      const ffmpeg = spawn("ffmpeg", ffmpegArgs);
+      ffmpeg.stdout.pipe(res);
+      ffmpeg.stderr.on("data", (d) => {
+        const s = d.toString();
+        if (!s.includes("frame=") && !s.includes("speed=")) {
+          console.warn("[ffmpeg-stream]", s.trim());
+        }
+      });
+      let killed = false;
+      const stopRemux = () => {
+        if (!killed) {
+          killed = true;
+          try {
+            ffmpeg.stdout.destroy();
+            ffmpeg.kill("SIGKILL");
+          } catch {
+          }
+        }
+      };
+      req.on("aborted", stopRemux);
+      req.on("close", stopRemux);
+      res.on("close", stopRemux);
+      res.on("finish", stopRemux);
+      ffmpeg.on("error", (err) => {
+        console.error("[ffmpeg remux stream error]", err);
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end(`Transmux error: ${err.message}`);
+        }
+      });
+      return;
+    }
+    const rangeHeader = req.headers.range;
+    const requestHeaders = {
+      Authorization: `Bearer ${token}`
+    };
+    if (rangeHeader) {
+      requestHeaders["Range"] = rangeHeader;
+    }
+    const driveRes = await fetch(driveUrl, {
+      method: req.method,
+      headers: requestHeaders
+    });
+    if (!driveRes.ok && driveRes.status !== 206) {
+      const errorText = await driveRes.text();
+      console.error(`[Drive Stream Proxy Error] Status: ${driveRes.status}`, errorText);
+      res.statusCode = driveRes.status;
+      res.setHeader("Content-Type", "text/plain");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.end(`Google Drive Error (${driveRes.status}): ${errorText}`);
+      return;
+    }
+    res.statusCode = driveRes.status;
+    let contentType = driveRes.headers.get("content-type") || url.searchParams.get("mimeType") || "video/mp4";
+    if (contentType === "application/octet-stream") {
+      const requestedMime = url.searchParams.get("mimeType");
+      contentType = requestedMime || "video/mp4";
+    }
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    const contentRange = driveRes.headers.get("content-range");
+    if (contentRange) {
+      res.setHeader("Content-Range", contentRange);
+    }
+    const contentLength = driveRes.headers.get("content-length");
+    if (contentLength) {
+      res.setHeader("Content-Length", contentLength);
+    }
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    if (driveRes.body) {
+      const nodeStream = Readable.fromWeb(driveRes.body);
+      const stopDirectStream = () => {
+        if (!res.writableEnded) nodeStream.destroy();
+      };
+      req.on("aborted", stopDirectStream);
+      res.on("close", stopDirectStream);
+      nodeStream.pipe(res);
+    } else {
+      res.end();
+    }
+  } catch (err) {
+    console.error("[Drive Stream Proxy Exception]", err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "text/plain");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.end(`Stream Proxy Error: ${err.message}`);
+    }
+  }
+};
+const MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm"
+};
+function serveStatic(req, res) {
+  const distDir = path.resolve(__dirname, "dist");
+  let pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
+  if (pathname === "/" || pathname === "") pathname = "/index.html";
+  let filePath = path.join(distDir, pathname);
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    filePath = path.join(distDir, "index.html");
+  }
+  if (!fs.existsSync(filePath)) {
+    res.statusCode = 404;
+    res.end("Not Found. Please run `npm run build` first.");
+    return;
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || "application/octet-stream";
+  res.statusCode = 200;
+  res.setHeader("Content-Type", contentType);
+  fs.createReadStream(filePath).pipe(res);
+}
+const PORT = parseInt(process.env.PORT || "3000", 10);
+const HOST = "0.0.0.0";
+const server = http.createServer(async (req, res) => {
+  if (req.url && req.url.startsWith("/api/")) {
+    try {
+      await handler(req, res, () => serveStatic(req, res));
+    } catch (err) {
+      console.error("[API Error]", err);
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    }
+  } else {
+    serveStatic(req, res);
+  }
+});
+server.listen(PORT, HOST, () => {
+  console.log(`
+\u{1F30C} Nebula Cinema Server running on http://${HOST}:${PORT}`);
+});
