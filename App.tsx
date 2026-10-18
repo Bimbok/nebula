@@ -407,7 +407,10 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#07090e] text-gray-100 font-sans relative overflow-x-hidden selection:bg-indigo-500/30 selection:text-indigo-200">
+    <div
+      onContextMenu={(e) => e.preventDefault()}
+      className="min-h-screen bg-[#07090e] text-gray-100 font-sans relative overflow-x-hidden selection:bg-indigo-500/30 selection:text-indigo-200"
+    >
       {/* Ambient background glow accents */}
       <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[800px] h-[300px] bg-gradient-to-b from-indigo-500/[0.07] to-transparent blur-3xl pointer-events-none -z-10" />
 

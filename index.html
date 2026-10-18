@@ -7,9 +7,13 @@
     <title>Nebula — Cinema Streaming</title>
     <link rel="stylesheet" href="/index.css" />
   </head>
-  <body class="bg-[#07090e] text-white">
+  <body class="bg-[#07090e] text-white" oncontextmenu="return false;">
     <script>
       window.process = window.process || { env: {} };
+      document.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        return false;
+      }, { capture: true });
     </script>
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>

@@ -917,6 +917,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     <div
       ref={modalRef}
       onClick={handleBackdropClick}
+      onContextMenu={(e) => e.preventDefault()}
       className={`fixed inset-0 bg-black/95 backdrop-blur-2xl flex items-center justify-center z-50 animate-pop-in ${
         isFullscreen ? 'p-0' : 'p-0 sm:p-4'
       }`}
@@ -1018,6 +1019,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
           onTouchStart={handleCanvasTouchStart}
           onTouchEnd={handleCanvasTouchEnd}
           onClick={() => handleScreenTap('click')}
+          onContextMenu={(e) => e.preventDefault()}
         >
           <video
             ref={videoRef}
@@ -1028,6 +1030,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
             playsInline
             preload="metadata"
             style={getVideoStyle()}
+            onContextMenu={(e) => e.preventDefault()}
             onLoadStart={handleLoadStart}
             onCanPlay={handleCanPlay}
             onWaiting={handleWaiting}
