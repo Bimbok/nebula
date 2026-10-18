@@ -483,18 +483,39 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
     return () => clearTimeout(timer);
   }, [showAspectToast]);
 
-  // Auto-hide controls with mouse movement detection
-  const handleMouseMove = () => {
-    setIsControlsVisible(true);
+  // Auto-hide controls with mouse movement & touch detection
+  const resetControlsTimer = useCallback((forceVisible = true) => {
+    if (forceVisible) setIsControlsVisible(true);
     if (controlsTimeoutRef.current) {
       clearTimeout(controlsTimeoutRef.current);
     }
-    controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying) {
+    if (isPlaying) {
+      controlsTimeoutRef.current = setTimeout(() => {
         setIsControlsVisible(false);
-      }
-    }, 3200);
+      }, 3200);
+    }
+  }, [isPlaying]);
+
+  const handleMouseMove = () => {
+    resetControlsTimer(true);
   };
+
+  const handleTouch = () => {
+    resetControlsTimer(true);
+  };
+
+  // Auto-hide controls when video starts or resumes playing
+  useEffect(() => {
+    if (isPlaying) {
+      resetControlsTimer(false);
+    } else {
+      setIsControlsVisible(true);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    }
+    return () => {
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    };
+  }, [isPlaying, resetControlsTimer]);
 
   // Trigger brief play/pause ripple
   const triggerSplash = (type: 'play' | 'pause') => {
@@ -513,6 +534,24 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
       }
     }
   }, []);
+
+  // Canvas click/tap handler: On mobile, tap toggles OSD without pausing; on desktop, click plays/pauses
+  const handleVideoCanvasClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const isMobile = typeof window !== 'undefined' && (window.innerWidth < 768 || 'ontouchstart' in window);
+
+    if (isMobile) {
+      if (isControlsVisible) {
+        setIsControlsVisible(false);
+        if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+      } else {
+        resetControlsTimer(true);
+      }
+    } else {
+      togglePlay();
+      resetControlsTimer(true);
+    }
+  };
 
   // Unified Seek Handler
   const seekTo = useCallback(
@@ -548,6 +587,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   };
 
   const handleScrubberClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    resetControlsTimer(true);
     if (!scrubberContainerRef.current || knownTotalDuration <= 0) return;
     const rect = scrubberContainerRef.current.getBoundingClientRect();
     const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -621,6 +661,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   // Audio track switching
   const handleAudioTrackChange = (newAudioIdxStr: string) => {
+    resetControlsTimer(true);
     if (newAudioIdxStr === selectedAudioIndex) return;
     const seekSec = Math.floor(currentTime);
     setResumeTime(seekSec);
@@ -632,6 +673,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   // Subtitle selection
   const handleSubtitleChange = (subIdStr: string) => {
+    resetControlsTimer(true);
     setActiveCueText(null);
     setSubtitleCues([]);
     setSelectedSubtitleId(subIdStr);
@@ -690,6 +732,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const handlePlaying = () => {
     setIsBuffering(false);
     setIsPlaying(true);
+    resetControlsTimer(false);
   };
 
   const handlePause = () => {
@@ -769,20 +812,22 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
       ref={modalRef}
       onClick={handleBackdropClick}
       className={`fixed inset-0 bg-black/95 backdrop-blur-2xl flex items-center justify-center z-50 animate-pop-in ${
-        isFullscreen ? 'p-0' : 'p-2 sm:p-4'
+        isFullscreen ? 'p-0' : 'p-0 sm:p-4'
       }`}
     >
       {/* Main Player Card */}
       <div
         ref={playerContainerRef}
         onMouseMove={handleMouseMove}
+        onTouchStart={handleTouch}
+        onTouchMove={handleTouch}
         onMouseLeave={() => {
           if (isPlaying) setIsControlsVisible(false);
         }}
         className={`relative flex flex-col bg-[#050608] transition-all duration-300 select-none overflow-hidden ${
           isFullscreen
             ? 'w-screen h-screen rounded-none border-0'
-            : 'w-full max-w-5xl rounded-3xl border border-white/[0.08] shadow-[0_25px_70px_rgba(0,0,0,0.95)]'
+            : 'w-full h-full sm:h-auto sm:max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border border-white/[0.08] shadow-[0_25px_70px_rgba(0,0,0,0.95)]'
         }`}
       >
         {/* Subtle top ambient glow */}
@@ -790,20 +835,24 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
         {/* Top Header Bar (Floating & Auto-Hiding) */}
         <div
-          className={`absolute top-0 left-0 right-0 z-30 px-4 sm:px-6 py-4 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/40 to-transparent transition-opacity duration-300 ${
-            isControlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          onClick={(e) => {
+            e.stopPropagation();
+            resetControlsTimer(true);
+          }}
+          className={`absolute top-0 left-0 right-0 z-30 px-3 sm:px-6 py-3 sm:py-4 flex items-center justify-between bg-gradient-to-b from-black/85 via-black/40 to-transparent transition-opacity duration-300 ${
+            isControlsVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
           }`}
         >
           {/* Title & Metadata */}
-          <div className="flex items-center space-x-3 overflow-hidden mr-4">
+          <div className="flex items-center space-x-2.5 sm:space-x-3 overflow-hidden mr-2 sm:mr-4 min-w-0">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-            <div className="truncate">
-              <h2 className="text-xs sm:text-sm font-semibold text-white tracking-tight truncate drop-shadow" title={video.name}>
+            <div className="min-w-0">
+              <h2 className="text-xs sm:text-sm font-semibold text-white tracking-tight truncate drop-shadow max-w-[170px] sm:max-w-md" title={video.name}>
                 {video.name}
               </h2>
-              <div className="flex items-center space-x-2 text-[10px] text-gray-400 mt-0.5 font-mono">
+              <div className="flex items-center space-x-1.5 sm:space-x-2 text-[10px] text-gray-400 mt-0.5 font-mono">
                 {video.videoMediaMetadata?.height && (
-                  <span className="bg-white/[0.08] text-indigo-300 px-1.5 py-0.5 rounded border border-white/[0.05]">
+                  <span className="bg-white/[0.08] text-indigo-300 px-1.5 py-0.5 rounded border border-white/[0.05] shrink-0">
                     {video.videoMediaMetadata.height >= 2160
                       ? '4K UHD'
                       : video.videoMediaMetadata.height >= 1080
@@ -811,18 +860,18 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                       : `${video.videoMediaMetadata.height}p`}
                   </span>
                 )}
-                <span>HTTP Range</span>
+                <span className="hidden sm:inline">HTTP Range</span>
               </div>
             </div>
           </div>
 
           {/* Top Quick Actions */}
-          <div className="flex items-center space-x-2 shrink-0">
-            {/* Keyboard Shortcuts Button */}
+          <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
+            {/* Keyboard Shortcuts Button - Desktop Only */}
             <button
               onClick={() => setShowHotkeysModal(true)}
               title="Keyboard Shortcuts (?)"
-              className="w-8 h-8 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.06] text-gray-300 hover:text-white flex items-center justify-center transition-colors"
+              className="hidden sm:flex w-8 h-8 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.06] text-gray-300 hover:text-white items-center justify-center transition-colors"
             >
               <Icons.Keyboard className="w-4 h-4" />
             </button>
@@ -831,12 +880,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
             <button
               onClick={handleCopyLink}
               title="Copy stream URL for VLC or MPV"
-              className="px-3 py-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.06] text-gray-300 hover:text-white text-xs font-medium transition-colors flex items-center space-x-1.5"
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.06] text-gray-300 hover:text-white text-xs font-medium transition-colors flex items-center space-x-1 sm:space-x-1.5"
             >
               {copiedUrl ? (
                 <>
                   <Icons.Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="text-emerald-400">Copied!</span>
+                  <span className="text-emerald-400 text-[11px] sm:text-xs">Copied!</span>
                 </>
               ) : (
                 <>
@@ -860,9 +909,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
         {/* Video Canvas Container */}
         <div
           className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${
-            isFullscreen ? 'flex-1 h-full' : 'aspect-video'
+            isFullscreen ? 'flex-1 h-full' : 'flex-1 sm:flex-none sm:aspect-video'
           }`}
-          onClick={togglePlay}
+          onClick={handleVideoCanvasClick}
         >
           <video
             ref={videoRef}
@@ -885,9 +934,56 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
             Your browser does not support the video tag.
           </video>
 
-          {/* Center Screen Animated Splash Icon (Play / Pause Ripple) */}
+          {/* Mobile Center Quick Controls (Rewind 10s, Big Play/Pause, Forward 10s) */}
+          <div
+            className={`sm:hidden absolute inset-0 flex items-center justify-center space-x-8 pointer-events-none transition-opacity duration-200 z-25 ${
+              isControlsVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0'
+            }`}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                seekTo(Math.max(0, currentTime - 10));
+                resetControlsTimer(true);
+              }}
+              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center active:scale-90 transition-transform shadow-lg"
+              title="Rewind 10s"
+            >
+              <Icons.Rewind10 className="w-6 h-6" />
+            </button>
+
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                togglePlay();
+                resetControlsTimer(true);
+              }}
+              className="w-16 h-16 rounded-full bg-indigo-600/90 backdrop-blur-md border border-white/25 text-white flex items-center justify-center active:scale-95 transition-transform shadow-2xl"
+              title={isPlaying ? 'Pause' : 'Play'}
+            >
+              {isPlaying ? (
+                <Icons.Pause className="w-8 h-8" />
+              ) : (
+                <Icons.Play className="w-8 h-8 ml-1" />
+              )}
+            </button>
+
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                seekTo(Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, currentTime + 10));
+                resetControlsTimer(true);
+              }}
+              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center active:scale-90 transition-transform shadow-lg"
+              title="Forward 10s"
+            >
+              <Icons.Forward10 className="w-6 h-6" />
+            </button>
+          </div>
+
+          {/* Center Screen Animated Splash Icon (Play / Pause Ripple on Desktop) */}
           {splashIcon && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
+            <div className="hidden sm:flex absolute inset-0 items-center justify-center pointer-events-none z-30">
               <div className="w-16 h-16 rounded-full bg-black/60 backdrop-blur-md border border-white/20 text-white flex items-center justify-center shadow-2xl animate-pop-in">
                 {splashIcon === 'play' ? (
                   <Icons.Play className="w-8 h-8 ml-1" />
@@ -901,13 +997,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
           {/* Guaranteed Netflix-grade On-Screen Subtitle Banner */}
           {activeCueText && selectedSubtitleId !== 'off' && (
             <div
-              className={`absolute left-1/2 -translate-x-1/2 pointer-events-none z-30 max-w-[85%] text-center px-4 transition-all duration-200 ${
-                isControlsVisible ? 'bottom-28 sm:bottom-24' : 'bottom-12 sm:bottom-16'
+              className={`absolute left-1/2 -translate-x-1/2 pointer-events-none z-30 max-w-[92%] sm:max-w-[85%] text-center px-2 sm:px-4 transition-all duration-200 ${
+                isControlsVisible ? 'bottom-32 sm:bottom-24' : 'bottom-6 sm:bottom-16'
               }`}
             >
               <span
-                className={`inline-block px-4 py-1.5 rounded-xl bg-black/80 backdrop-blur-xs text-white font-semibold leading-relaxed tracking-wide shadow-2xl border border-white/10 select-none whitespace-pre-wrap ${
-                  subtitleSize === 'large' ? 'text-lg sm:text-2xl' : 'text-sm sm:text-lg'
+                className={`inline-block px-3 sm:px-4 py-1 sm:py-1.5 rounded-xl bg-black/85 backdrop-blur-xs text-white font-semibold leading-relaxed tracking-wide shadow-2xl border border-white/10 select-none whitespace-pre-wrap ${
+                  subtitleSize === 'large' ? 'text-base sm:text-2xl' : 'text-xs sm:text-lg'
                 }`}
                 style={{ textShadow: '0 2px 6px rgba(0,0,0,0.9)' }}
               >
@@ -971,15 +1067,19 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
         {/* Floating Glass Bottom Controls Overlay */}
         <div
-          className={`absolute bottom-0 left-0 right-0 z-30 p-3 sm:p-5 bg-gradient-to-t from-black/90 via-black/50 to-transparent transition-opacity duration-300 ${
-            isControlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          className={`absolute bottom-0 left-0 right-0 z-30 p-2 sm:p-5 bg-gradient-to-t from-black/95 via-black/60 to-transparent transition-opacity duration-300 ${
+            isControlsVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
           }`}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            resetControlsTimer(true);
+          }}
+          onTouchStart={() => resetControlsTimer(true)}
         >
           {/* Inner Floating Capsule */}
-          <div className="bg-[#0b0e17]/85 backdrop-blur-2xl border border-white/[0.08] rounded-2xl p-3 sm:p-4 shadow-[0_15px_35px_rgba(0,0,0,0.8)]">
+          <div className="bg-[#0b0e17]/90 sm:bg-[#0b0e17]/85 backdrop-blur-2xl border border-white/[0.08] rounded-2xl p-2.5 sm:p-4 shadow-[0_15px_35px_rgba(0,0,0,0.8)]">
             {/* 1. Scrubber & Time Preview */}
-            <div className="relative mb-3">
+            <div className="relative mb-2 sm:mb-3">
               {/* Hover Tooltip Timestamp */}
               {hoverTime !== null && knownTotalDuration > 0 && (
                 <div
@@ -1013,115 +1113,144 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                 step="0.5"
                 value={knownTotalDuration > 0 ? currentTime : 0}
                 disabled={knownTotalDuration <= 0}
-                onChange={(e) => seekTo(parseFloat(e.target.value))}
+                onChange={(e) => {
+                  resetControlsTimer(true);
+                  seekTo(parseFloat(e.target.value));
+                }}
                 className="scrubber-slider absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               />
             </div>
 
             {/* 2. Controls Toolbar */}
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              {/* Left: Playback, Skip, Volume, Time */}
-              <div className="flex items-center space-x-2 sm:space-x-3">
-                {/* Play / Pause Toggle */}
-                <button
-                  onClick={togglePlay}
-                  className="w-9 h-9 rounded-xl bg-white/[0.08] hover:bg-white/[0.15] text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95"
-                  title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
-                >
-                  {isPlaying ? (
-                    <Icons.Pause className="w-4 h-4" />
-                  ) : (
-                    <Icons.Play className="w-4 h-4 ml-0.5" />
-                  )}
-                </button>
-
-                {/* Rewind 10s */}
-                <button
-                  onClick={() => seekTo(Math.max(0, currentTime - 10))}
-                  className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-all"
-                  title="Rewind 10s (Left Arrow)"
-                >
-                  <Icons.Rewind10 className="w-4 h-4" />
-                </button>
-
-                {/* Fast-Forward 10s */}
-                <button
-                  onClick={() => seekTo(Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, currentTime + 10))}
-                  className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-all"
-                  title="Forward 10s (Right Arrow)"
-                >
-                  <Icons.Forward10 className="w-4 h-4" />
-                </button>
-
-                {/* Volume & Mute */}
-                <div
-                  className="relative flex items-center space-x-1.5"
-                  onMouseEnter={() => setShowVolumeSlider(true)}
-                  onMouseLeave={() => setShowVolumeSlider(false)}
-                >
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
+              {/* Primary Transport Line: Play, Skip, Volume, Time + Mobile Quick Actions */}
+              <div className="flex items-center justify-between sm:justify-start space-x-2 sm:space-x-3 w-full sm:w-auto">
+                <div className="flex items-center space-x-1.5 sm:space-x-2.5">
+                  {/* Play / Pause Toggle */}
                   <button
-                    onClick={() => {
-                      if (videoRef.current) {
-                        videoRef.current.muted = !isMuted;
-                        setIsMuted(!isMuted);
-                      }
-                    }}
-                    className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-colors"
-                    title="Mute / Unmute (M)"
+                    onClick={togglePlay}
+                    className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white/[0.08] hover:bg-white/[0.15] text-white flex items-center justify-center transition-all active:scale-95"
+                    title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
                   >
-                    {isMuted || volume === 0 ? (
-                      <Icons.VolumeMute className="w-4 h-4 text-red-400" />
+                    {isPlaying ? (
+                      <Icons.Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                     ) : (
-                      <Icons.VolumeHigh className="w-4 h-4" />
+                      <Icons.Play className="w-3.5 h-3.5 sm:w-4 sm:h-4 ml-0.5" />
                     )}
                   </button>
 
-                  {/* Expandable Volume Slider */}
-                  <div
-                    className={`transition-all duration-200 overflow-hidden flex items-center ${
-                      showVolumeSlider ? 'w-20 opacity-100 mr-2' : 'w-0 opacity-0'
-                    }`}
+                  {/* Rewind 10s */}
+                  <button
+                    onClick={() => seekTo(Math.max(0, currentTime - 10))}
+                    className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-all"
+                    title="Rewind 10s (Left Arrow)"
                   >
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={isMuted ? 0 : volume}
-                      onChange={(e) => {
-                        const v = parseFloat(e.target.value);
-                        setVolume(v);
+                    <Icons.Rewind10 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </button>
+
+                  {/* Fast-Forward 10s */}
+                  <button
+                    onClick={() => seekTo(Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, currentTime + 10))}
+                    className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-all"
+                    title="Forward 10s (Right Arrow)"
+                  >
+                    <Icons.Forward10 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </button>
+
+                  {/* Volume & Mute (Desktop Only: mobile uses hardware rocker) */}
+                  <div
+                    className="hidden sm:flex relative items-center space-x-1.5"
+                    onMouseEnter={() => setShowVolumeSlider(true)}
+                    onMouseLeave={() => setShowVolumeSlider(false)}
+                  >
+                    <button
+                      onClick={() => {
                         if (videoRef.current) {
-                          videoRef.current.volume = v;
-                          videoRef.current.muted = v === 0;
+                          videoRef.current.muted = !isMuted;
+                          setIsMuted(!isMuted);
                         }
-                        setIsMuted(v === 0);
                       }}
-                      className="volume-slider w-full"
-                    />
+                      className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-gray-300 hover:text-white flex items-center justify-center transition-colors"
+                      title="Mute / Unmute (M)"
+                    >
+                      {isMuted || volume === 0 ? (
+                        <Icons.VolumeMute className="w-4 h-4 text-red-400" />
+                      ) : (
+                        <Icons.VolumeHigh className="w-4 h-4" />
+                      )}
+                    </button>
+
+                    {/* Expandable Volume Slider */}
+                    <div
+                      className={`transition-all duration-200 overflow-hidden flex items-center ${
+                        showVolumeSlider ? 'w-20 opacity-100 mr-2' : 'w-0 opacity-0'
+                      }`}
+                    >
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={isMuted ? 0 : volume}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          setVolume(v);
+                          if (videoRef.current) {
+                            videoRef.current.volume = v;
+                            videoRef.current.muted = v === 0;
+                          }
+                          setIsMuted(v === 0);
+                        }}
+                        className="volume-slider w-full"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Time Display */}
+                  <div className="font-mono text-[11px] sm:text-xs text-gray-300 flex items-center space-x-1 pl-1 select-none">
+                    <span className="text-white font-medium">{formatTimestamp(currentTime)}</span>
+                    <span className="text-gray-500">/</span>
+                    <span className="text-gray-400">
+                      {knownTotalDuration > 0 ? formatTimestamp(knownTotalDuration) : isProbingTracks ? '...' : '--:--'}
+                    </span>
                   </div>
                 </div>
 
-                {/* Time Display */}
-                <div className="font-mono text-xs text-gray-300 flex items-center space-x-1 pl-1 select-none">
-                  <span className="text-white font-medium">{formatTimestamp(currentTime)}</span>
-                  <span className="text-gray-500">/</span>
-                  <span className="text-gray-400">
-                    {knownTotalDuration > 0 ? formatTimestamp(knownTotalDuration) : isProbingTracks ? '...' : '--:--'}
-                  </span>
+                {/* Mobile Right Quick Actions: Aspect + Fullscreen */}
+                <div className="flex sm:hidden items-center space-x-1.5 ml-auto">
+                  <button
+                    onClick={cycleAspectRatio}
+                    className="px-2 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-lg text-[10px] font-medium flex items-center space-x-1 transition-colors"
+                    title="Aspect Ratio"
+                  >
+                    <Icons.Aspect className="w-3 h-3 text-amber-400" />
+                    <span className="capitalize">{aspectRatio}</span>
+                  </button>
+
+                  <button
+                    onClick={toggleFullscreen}
+                    className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white flex items-center justify-center transition-colors"
+                    title="Fullscreen"
+                  >
+                    {isFullscreen ? (
+                      <Icons.ExitFullscreen className="w-3.5 h-3.5" />
+                    ) : (
+                      <Icons.Fullscreen className="w-3.5 h-3.5" />
+                    )}
+                  </button>
                 </div>
               </div>
 
-              {/* Right: Audio Selector, Subtitle Selector, Aspect, Fullscreen */}
-              <div className="flex flex-wrap items-center space-x-2">
+              {/* Secondary Controls: Audio & Subtitle Selectors + Desktop Aspect/Fullscreen */}
+              <div className="flex items-center space-x-1.5 sm:space-x-2 w-full sm:w-auto overflow-x-auto no-scrollbar pt-1 sm:pt-0">
                 {/* Audio Track Selector */}
-                <div className="flex items-center space-x-1 bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.06] rounded-xl px-2 py-1 transition-colors">
+                <div className="flex items-center space-x-1 bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.06] rounded-xl px-2 py-1 transition-colors max-w-[140px] sm:max-w-[200px] shrink-0">
                   <Icons.Audio className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                   <select
                     value={selectedAudioIndex}
                     onChange={(e) => handleAudioTrackChange(e.target.value)}
                     disabled={isProbingTracks && audioTracks.length === 0}
-                    className="bg-transparent text-gray-300 text-xs focus:outline-none cursor-pointer pr-1"
+                    className="bg-transparent text-gray-300 text-[11px] sm:text-xs focus:outline-none cursor-pointer pr-1 truncate w-full"
                   >
                     {audioTracks.length > 0 ? (
                       audioTracks.map((t) => (
@@ -1138,13 +1267,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                 </div>
 
                 {/* Subtitle Selector */}
-                <div className="flex items-center space-x-1 bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.06] rounded-xl px-2 py-1 transition-colors">
+                <div className="flex items-center space-x-1 bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.06] rounded-xl px-2 py-1 transition-colors max-w-[130px] sm:max-w-[180px] shrink-0">
                   <Icons.Subtitle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                   <select
                     value={selectedSubtitleId}
                     onChange={(e) => handleSubtitleChange(e.target.value)}
                     disabled={isProbingTracks && subtitleTracks.length === 0}
-                    className="bg-transparent text-gray-300 text-xs focus:outline-none cursor-pointer pr-1"
+                    className="bg-transparent text-gray-300 text-[11px] sm:text-xs focus:outline-none cursor-pointer pr-1 truncate w-full"
                   >
                     <option value="off" className="bg-[#0e111a] text-gray-200">Subtitles Off</option>
                     {subtitleTracks.map((s) => (
@@ -1165,7 +1294,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     title="Upload local .srt subtitle"
-                    className="text-[10px] text-gray-400 hover:text-white px-1 font-mono hover:bg-white/[0.08] rounded transition-colors"
+                    className="text-[10px] text-gray-400 hover:text-white px-1 font-mono hover:bg-white/[0.08] rounded transition-colors shrink-0"
                   >
                     +SRT
                   </button>
@@ -1175,27 +1304,27 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                 {selectedSubtitleId !== 'off' && (
                   <button
                     onClick={() => setSubtitleSize((prev) => (prev === 'normal' ? 'large' : 'normal'))}
-                    className="px-2 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-xl text-[10px] font-mono transition-colors"
+                    className="px-2 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-xl text-[10px] font-mono transition-colors shrink-0"
                     title="Toggle Subtitle Size"
                   >
                     {subtitleSize === 'normal' ? '1x' : '1.5x'}
                   </button>
                 )}
 
-                {/* Aspect Ratio Button */}
+                {/* Desktop Aspect Ratio Button */}
                 <button
                   onClick={cycleAspectRatio}
-                  className="px-2.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-xl text-xs font-medium flex items-center space-x-1 transition-colors"
+                  className="hidden sm:flex px-2.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-xl text-xs font-medium items-center space-x-1 transition-colors shrink-0"
                   title="Cycle Aspect Ratio (C or A)"
                 >
                   <Icons.Aspect className="w-3.5 h-3.5 text-amber-400" />
                   <span className="capitalize">{aspectRatio}</span>
                 </button>
 
-                {/* Fullscreen Toggle */}
+                {/* Desktop Fullscreen Toggle */}
                 <button
                   onClick={toggleFullscreen}
-                  className="w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white flex items-center justify-center transition-colors"
+                  className="hidden sm:flex w-8 h-8 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white items-center justify-center transition-colors shrink-0"
                   title="Toggle Fullscreen (F)"
                 >
                   {isFullscreen ? (
