@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import MascotLogo from './MascotLogo';
 
 interface HeaderProps {
@@ -6,6 +6,12 @@ interface HeaderProps {
   onLogout: () => void;
   token?: string;
 }
+
+const isClientLocalhost = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const h = window.location.hostname;
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h.endsWith('.local');
+};
 
 const CinemaIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -49,12 +55,37 @@ const CheckIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
 const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
   const [showShareModal, setShowShareModal] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isLocalhost] = useState<boolean>(isClientLocalhost);
+  const [localIp, setLocalIp] = useState<string>('');
+  const [lanPort, setLanPort] = useState<string>(() => {
+    return typeof window !== 'undefined' && window.location.port ? window.location.port : '3000';
+  });
 
-  const localIp = '192.168.29.213';
-  const lanPort = '3000';
+  const fetchNetworkInfo = useCallback(() => {
+    fetch('/api/config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.localIp && data.localIp !== '127.0.0.1') {
+          setLocalIp(data.localIp);
+        }
+        if (data?.port) {
+          setLanPort(String(data.port));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (isLocalhost) {
+      fetchNetworkInfo();
+    }
+  }, [isLocalhost, fetchNetworkInfo]);
+
+  const effectiveIp = localIp || (typeof window !== 'undefined' ? window.location.hostname : 'localhost');
+  const effectivePort = lanPort || (typeof window !== 'undefined' && window.location.port ? window.location.port : '3000');
   const shareUrl = token
-    ? `http://${localIp}:${lanPort}/?token=${encodeURIComponent(token)}`
-    : `http://${localIp}:${lanPort}`;
+    ? `http://${effectiveIp}:${effectivePort}/?token=${encodeURIComponent(token)}`
+    : `http://${effectiveIp}:${effectivePort}`;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(shareUrl);
@@ -80,12 +111,6 @@ const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
                   Cinema
                 </span>
               </div>
-              <div className="flex items-center space-x-1.5 mt-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-[10px] text-gray-400 font-mono tracking-tight">
-                  {localIp}:{lanPort}
-                </span>
-              </div>
             </div>
           </div>
 
@@ -93,14 +118,19 @@ const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
           <div className="flex items-center space-x-2.5">
             {isSignedIn && (
               <>
-                <button
-                  onClick={() => setShowShareModal(true)}
-                  className="group relative flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-white/[0.04] hover:bg-indigo-500/15 border border-white/[0.08] hover:border-indigo-500/30 text-xs font-medium text-gray-300 hover:text-white transition-all duration-200 shadow-sm"
-                  title="Share stream access with mobile devices or Smart TVs on local Wi-Fi"
-                >
-                  <ShareIcon className="w-3.5 h-3.5 text-indigo-400 group-hover:rotate-12 transition-transform duration-300" />
-                  <span className="hidden sm:inline">TV & Phone</span>
-                </button>
+                {isLocalhost && (
+                  <button
+                    onClick={() => {
+                      setShowShareModal(true);
+                      if (!localIp) fetchNetworkInfo();
+                    }}
+                    className="group relative flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-white/[0.04] hover:bg-indigo-500/15 border border-white/[0.08] hover:border-indigo-500/30 text-xs font-medium text-gray-300 hover:text-white transition-all duration-200 shadow-sm"
+                    title="Stream on Phone or Smart TV (Local Wi-Fi)"
+                  >
+                    <ShareIcon className="w-3.5 h-3.5 text-indigo-400 group-hover:rotate-12 transition-transform duration-300" />
+                    <span className="hidden sm:inline">TV & Phone</span>
+                  </button>
+                )}
 
                 <button
                   onClick={onLogout}
@@ -136,7 +166,12 @@ const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
                 </div>
                 <div>
                   <h3 className="text-sm font-semibold text-white">Stream on Phone or Smart TV</h3>
-                  <p className="text-[11px] text-gray-400">Local Wi-Fi Network</p>
+                  <div className="flex items-center space-x-1.5 mt-0.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <p className="text-[11px] text-gray-400 font-mono">
+                      Local Wi-Fi Network ({effectiveIp}:{effectivePort})
+                    </p>
+                  </div>
                 </div>
               </div>
               <button

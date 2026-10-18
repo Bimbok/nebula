@@ -87,7 +87,8 @@ Google Drive API (alt=media)
 
 * **Session Persistence:** OAuth access token is stored in `localStorage` (`gdrive_oauth_token`) and `document.cookie` (`gdrive_token`).
 * **LAN / Smart TV Access:**
-  * Accessing the app over Wi-Fi (`http://192.168.29.213:3000`) is enabled by the "TV & Phone" share modal.
+  * Accessing the app over Wi-Fi is enabled by the "TV & Phone" share modal, which is conditionally displayed when running on localhost.
+  * Dynamically queries the host machine's active network interfaces via Node.js `os.networkInterfaces()` to construct the actual LAN stream URL (e.g. `http://<local-network-ip>:<port>/?token=...`).
   * App automatically detects `?token=` query parameters on load, installs the token into `localStorage` and `cookie`, and cleans the URL so no Google OAuth login prompt is required on secondary devices.
 
 ---

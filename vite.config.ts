@@ -5,6 +5,33 @@ import tailwindcss from '@tailwindcss/vite';
 import { Readable } from 'node:stream';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+
+function getLocalNetworkIp(): string {
+  try {
+    const interfaces = os.networkInterfaces();
+    const candidates: { name: string; address: string }[] = [];
+
+    for (const [name, ifaceList] of Object.entries(interfaces)) {
+      if (!ifaceList) continue;
+      const isVirtual = /^(docker|vbox|br-|tun|tap|virbr|dummy|lo)/i.test(name);
+      for (const iface of ifaceList) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          if (!isVirtual) {
+            candidates.unshift({ name, address: iface.address });
+          } else {
+            candidates.push({ name, address: iface.address });
+          }
+        }
+      }
+    }
+
+    const preferred = candidates.find((c) => /^(wl|wlan|en|eth|wi-fi|ethernet)/i.test(c.name));
+    return preferred ? preferred.address : (candidates[0]?.address || '127.0.0.1');
+  } catch {
+    return '127.0.0.1';
+  }
+}
 
 // Cache probed track metadata in memory by fileId
 const trackMetadataCache = new Map<string, { audioTracks: any[]; subtitleTracks: any[]; duration: number; timestamp: number }>();
@@ -73,9 +100,16 @@ function streamProxyPlugin() {
     }
 
     // -------------------------------------------------------------
-    // 0. /api/config : Runtime config endpoint
+    // 0. /api/config & /api/network : Runtime environment & network config
     // -------------------------------------------------------------
-    if (rawUrl.startsWith('/api/config')) {
+    if (rawUrl.startsWith('/api/config') || rawUrl.startsWith('/api/network')) {
+      const localIp = getLocalNetworkIp();
+      const hostHeader = req.headers.host || '';
+      const port = hostHeader.includes(':')
+        ? parseInt(hostHeader.split(':')[1], 10)
+        : (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
+      const isCloud = Boolean(process.env.RENDER || process.env.VERCEL);
+
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -83,6 +117,10 @@ function streamProxyPlugin() {
       res.end(JSON.stringify({
         GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '',
         GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || '',
+        localIp,
+        port,
+        isCloud,
+        networkUrl: `http://${localIp}:${port}`,
       }));
       return;
     }

@@ -4,6 +4,33 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { Readable } from 'node:stream';
+import os from 'node:os';
+
+function getLocalNetworkIp(): string {
+  try {
+    const interfaces = os.networkInterfaces();
+    const candidates: { name: string; address: string }[] = [];
+
+    for (const [name, ifaceList] of Object.entries(interfaces)) {
+      if (!ifaceList) continue;
+      const isVirtual = /^(docker|vbox|br-|tun|tap|virbr|dummy|lo)/i.test(name);
+      for (const iface of ifaceList) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          if (!isVirtual) {
+            candidates.unshift({ name, address: iface.address });
+          } else {
+            candidates.push({ name, address: iface.address });
+          }
+        }
+      }
+    }
+
+    const preferred = candidates.find((c) => /^(wl|wlan|en|eth|wi-fi|ethernet)/i.test(c.name));
+    return preferred ? preferred.address : (candidates[0]?.address || '127.0.0.1');
+  } catch {
+    return '127.0.0.1';
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,9 +102,16 @@ const handler = async (req: any, res: any, next: any) => {
     }
 
     // -------------------------------------------------------------
-    // 0. /api/config : Runtime environment config endpoint
+    // 0. /api/config & /api/network : Runtime environment & network config
     // -------------------------------------------------------------
-    if (rawUrl.startsWith('/api/config')) {
+    if (rawUrl.startsWith('/api/config') || rawUrl.startsWith('/api/network')) {
+      const localIp = getLocalNetworkIp();
+      const hostHeader = req.headers.host || '';
+      const port = hostHeader.includes(':')
+        ? parseInt(hostHeader.split(':')[1], 10)
+        : (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
+      const isCloud = Boolean(process.env.RENDER || process.env.VERCEL);
+
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -85,6 +119,10 @@ const handler = async (req: any, res: any, next: any) => {
       res.end(JSON.stringify({
         GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '',
         GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || '',
+        localIp,
+        port,
+        isCloud,
+        networkUrl: `http://${localIp}:${port}`,
       }));
       return;
     }
