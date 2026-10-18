@@ -428,10 +428,8 @@ class DiscordPresenceService {
       state: stateText,
       timestamps,
       assets: {
-        large_image: 'https://raw.githubusercontent.com/Bimbok/nebula/master/public/mascot.svg',
-        large_text: 'Nebula Cinema',
-        small_image: isPaused ? 'https://img.icons8.com/ios-filled/50/ffffff/pause--v1.png' : 'https://img.icons8.com/ios-filled/50/ffffff/play--v1.png',
-        small_text: isPaused ? 'Paused' : 'Playing',
+        large_image: 'https://raw.githubusercontent.com/Bimbok/nebula/master/public/mascot.png',
+        large_text: isPaused ? 'Nebula Cinema (Paused)' : 'Nebula Cinema',
       },
     };
 
@@ -469,7 +467,8 @@ class DiscordPresenceService {
         body: JSON.stringify({
           custom_status: {
             text: text.slice(0, 128),
-            emoji_name: isPaused ? '⏸️' : '🎬',
+            emoji_name: null,
+            emoji_id: null,
           },
         }),
       });
