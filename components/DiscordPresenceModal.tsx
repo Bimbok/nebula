@@ -19,7 +19,6 @@ const DiscordPresenceModal: React.FC<DiscordPresenceModalProps> = ({ isOpen, onC
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showGuide, setShowGuide] = useState(false);
-  const [copiedCode, setCopiedCode] = useState(false);
 
   // Sync state from service
   const [status, setStatus] = useState<DiscordPresenceStatus>(discordPresenceService.getStatus());
@@ -69,13 +68,6 @@ const DiscordPresenceModal: React.FC<DiscordPresenceModalProps> = ({ isOpen, onC
     setTokenInput('');
     setSuccessMsg('Disconnected from Discord');
     setTimeout(() => setSuccessMsg(null), 2500);
-  };
-
-  const handleCopyScript = () => {
-    const script = `copy(window.webpackChunkdiscord_app.push([[''],{},e=>{m=[];for(let c in e.c)m.push(e.c[c])}]),m.find(m=>m?.exports?.default?.getToken!==void 0).exports.default.getToken())`;
-    navigator.clipboard.writeText(script);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2200);
   };
 
   const avatarUrl = user?.avatar
@@ -223,52 +215,38 @@ const DiscordPresenceModal: React.FC<DiscordPresenceModalProps> = ({ isOpen, onC
               <div className="flex items-center justify-between border-b border-white/[0.06] pb-2">
                 <p className="text-xs text-indigo-300 font-semibold flex items-center space-x-1.5">
                   <span>🔑</span>
-                  <span>How to get your Discord token</span>
+                  <span>How to get your Discord token (Takes 5 seconds)</span>
                 </p>
-                <span className="text-[10px] text-gray-400 font-mono">2 Easy Methods</span>
+                <span className="text-[10px] text-emerald-400 font-mono font-medium">100% Reliable</span>
               </div>
 
-              {/* Method 1: Console */}
-              <div className="space-y-1.5">
-                <span className="text-[11px] font-semibold text-white">Method 1: Console (Quickest)</span>
-                <ol className="list-decimal list-inside space-y-1 text-[11px] text-gray-400 leading-relaxed">
+              <div className="space-y-2">
+                <ol className="list-decimal list-inside space-y-2 text-[11px] text-gray-300 leading-relaxed">
                   <li>
-                    Open <span className="text-white font-mono">discord.com/app</span> in browser.
+                    Open <span className="text-white font-mono bg-white/[0.06] px-1.5 py-0.5 rounded">discord.com/app</span> in Chrome/Firefox.
                   </li>
                   <li>
-                    Press <kbd className="bg-white/10 px-1.5 py-0.5 rounded text-white text-[10px]">Ctrl + Shift + I</kbd> and go to the <b>Console</b> tab.
+                    Press <kbd className="bg-white/10 px-1.5 py-0.5 rounded text-white text-[10px] font-mono">Ctrl + Shift + I</kbd> to open Developer Tools.
                   </li>
                   <li>
-                    If Discord blocks pasting: type <code className="bg-indigo-500/20 text-indigo-200 px-1 py-0.5 rounded font-mono font-bold">allow pasting</code> and press <kbd className="bg-white/10 px-1 py-0.5 rounded text-white text-[10px]">Enter</kbd>.
+                    Click the <b className="text-indigo-300">Network</b> tab at the top (next to Console).
                   </li>
-                  <li>Paste this script and hit Enter:</li>
-                </ol>
-                <div className="relative bg-black/60 p-2 rounded-xl border border-white/10 font-mono text-[10px] text-indigo-300 break-all flex items-center justify-between">
-                  <span className="truncate mr-2">copy(window.webpackChunkdiscord_app.push(...))</span>
-                  <button
-                    type="button"
-                    onClick={handleCopyScript}
-                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-sans text-[10px] font-medium shrink-0 transition-colors shadow"
-                  >
-                    {copiedCode ? 'Copied!' : 'Copy Script'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Method 2: Network Tab */}
-              <div className="border-t border-white/[0.06] pt-2 space-y-1">
-                <span className="text-[11px] font-semibold text-white">Method 2: Network Tab (No Code Needed)</span>
-                <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-gray-400 leading-relaxed">
-                  <li>In DevTools (<kbd className="bg-white/10 px-1 py-0.5 rounded text-white text-[9px]">Ctrl+Shift+I</kbd>), click the <b>Network</b> tab.</li>
-                  <li>Type <code className="text-white font-mono">api</code> in the filter box.</li>
-                  <li>Click on any channel in Discord, then click any request in the list.</li>
-                  <li>Under <b>Request Headers</b>, find <code className="text-emerald-400 font-mono">authorization</code> and copy its value.</li>
+                  <li>
+                    In the Filter search box at the top, type: <code className="bg-indigo-500/20 text-indigo-200 px-1.5 py-0.5 rounded font-mono font-bold">api</code>
+                  </li>
+                  <li>
+                    Click on any friend or channel in Discord, then click on any request in the Network list (e.g. <code className="text-gray-400 font-mono">messages</code>, <code className="text-gray-400 font-mono">science</code>, or <code className="text-gray-400 font-mono">@me</code>).
+                  </li>
+                  <li>
+                    In the right panel under <b>Request Headers</b>, find <code className="text-emerald-400 font-mono font-bold">authorization:</code> and copy the code next to it!
+                  </li>
                 </ol>
               </div>
 
-              <p className="text-[10px] text-gray-500 italic">
-                🔒 Your token is stored only in your local browser storage and is never uploaded anywhere.
-              </p>
+              <div className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-2.5 text-[10px] text-gray-400 flex items-center space-x-2">
+                <span>🔒</span>
+                <span>Your token is saved exclusively in your browser's local storage and is never uploaded anywhere.</span>
+              </div>
             </div>
           )}
 
