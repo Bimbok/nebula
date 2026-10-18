@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import MascotLogo from './MascotLogo';
 
 interface HeaderProps {
   isSignedIn: boolean;
@@ -67,8 +68,8 @@ const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           {/* Logo & Brand */}
           <div className="flex items-center space-x-3 group cursor-pointer">
-            <div className="relative flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500/20 to-purple-500/10 border border-indigo-500/30 text-indigo-400 group-hover:border-indigo-400/60 transition-all duration-300 shadow-[0_0_15px_rgba(99,102,241,0.15)]">
-              <CinemaIcon className="w-5 h-5 transition-transform duration-300 group-hover:scale-110" />
+            <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500/15 via-purple-500/10 to-cyan-500/15 border border-indigo-500/30 group-hover:border-indigo-400/60 transition-all duration-300 shadow-[0_0_18px_rgba(99,102,241,0.2)] p-0.5">
+              <MascotLogo size="sm" animated />
             </div>
             <div>
               <div className="flex items-center space-x-2">

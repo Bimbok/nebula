@@ -6,6 +6,7 @@ import Login from './components/Login';
 import VideoGrid from './components/VideoGrid';
 import VideoPlayer from './components/VideoPlayer';
 import Loader from './components/Loader';
+import MascotLogo from './components/MascotLogo';
 import { GOOGLE_API_KEY, GOOGLE_CLIENT_ID, SCOPES } from './constants';
 
 declare global {
@@ -325,10 +326,13 @@ const App: React.FC = () => {
           <Login onLogin={handleLogin} isLoading={isLoading || !isGapiLoaded || !isGsiLoaded} />
         ) : isLoading ? (
           <div className="flex flex-col justify-center items-center h-80 space-y-4">
-            <Loader size="lg" />
-            <p className="text-xs font-medium text-gray-400 font-mono tracking-wide">
-              Loading Google Drive Library...
-            </p>
+            <MascotLogo size="xl" animated showBadge />
+            <div className="flex items-center space-x-2 text-indigo-400">
+              <Loader size="sm" />
+              <p className="text-xs font-medium text-gray-300 font-mono tracking-wide">
+                Scanning Google Drive Library...
+              </p>
+            </div>
           </div>
         ) : (
           <div className="space-y-6">

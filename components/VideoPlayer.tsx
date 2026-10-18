@@ -191,6 +191,7 @@ const formatTimestamp = (totalSeconds: number): string => {
   return `${pad(m)}:${pad(s)}`;
 };
 
+
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const modalRef = useRef<HTMLDivElement>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
@@ -207,7 +208,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const [isBuffering, setIsBuffering] = useState<boolean>(true);
   const [playbackError, setPlaybackError] = useState<{ message: string; code?: number } | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
-  const [mimeOverride, setMimeOverride] = useState<string | null>(null);
 
   // Volume & Audio State
   const [volume, setVolume] = useState<number>(1);
@@ -231,7 +231,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   // Audio & Subtitle Tracks
   const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([]);
   const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrackInfo[]>([]);
-  const [selectedAudioIndex, setSelectedAudioIndex] = useState<string>('default');
+  const [selectedAudioIndex, setSelectedAudioIndex] = useState<string>('0');
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<string>('off');
   const [isProbingTracks, setIsProbingTracks] = useState<boolean>(true);
   const [isSubtitleLoading, setIsSubtitleLoading] = useState<boolean>(false);
@@ -253,17 +253,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
       ? parseInt(video.videoMediaMetadata.durationMillis, 10) / 1000
       : 0;
 
-  const [audioMode, setAudioMode] = useState<'raw' | 'transcode'>('raw');
-
-  // Stream URL calculation
-  const targetMime = mimeOverride || video.mimeType || 'video/mp4';
-
-  let currentStreamUrl = `/api/stream?fileId=${video.id}&token=${encodeURIComponent(token)}`;
-  if (selectedAudioIndex !== 'default') {
-    currentStreamUrl += `&audioIndex=${selectedAudioIndex}&startTime=${Math.floor(resumeTime)}&mode=${audioMode}`;
-  } else {
-    currentStreamUrl += `&mimeType=${encodeURIComponent(targetMime)}`;
-  }
+  // Stream URL calculation - Smart Auto-Codec direct pass or 320k Studio AAC handled transparently
+  const currentStreamUrl = `/api/stream?fileId=${video.id}&token=${encodeURIComponent(token)}&audioIndex=${selectedAudioIndex}&startTime=${resumeTime}`;
 
   const absoluteStreamUrl = typeof window !== 'undefined' ? `${window.location.origin}${currentStreamUrl}` : currentStreamUrl;
 
@@ -422,7 +413,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
       setActiveCueText((previous) => (previous === text ? previous : text));
     };
 
-    const onSeeked = () => updateCue(player.currentTime + (selectedAudioIndex !== 'default' ? resumeTime : 0));
+    const onSeeked = () => updateCue(player.currentTime + resumeTime);
     onSeeked();
     player.addEventListener('seeked', onSeeked);
 
@@ -433,9 +424,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
     const framePlayer = player as FrameCallbackVideo;
     let frameHandle: number | undefined;
     let fallbackTimer: number | undefined;
-    const offset = selectedAudioIndex !== 'default' ? resumeTime : 0;
     const onFrame = (_now: number, metadata: { mediaTime: number }) => {
-      updateCue(metadata.mediaTime + offset);
+      updateCue(metadata.mediaTime + resumeTime);
       frameHandle = framePlayer.requestVideoFrameCallback?.(onFrame);
     };
 
@@ -452,7 +442,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
       if (frameHandle !== undefined) framePlayer.cancelVideoFrameCallback?.(frameHandle);
       if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
     };
-  }, [subtitleCues, selectedSubtitleId, selectedAudioIndex, resumeTime]);
+  }, [subtitleCues, selectedSubtitleId, resumeTime]);
 
   // Fullscreen listener
   useEffect(() => {
@@ -528,12 +518,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   const seekTo = useCallback(
     (targetSeconds: number) => {
       const clamped = Math.max(0, Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, targetSeconds));
-      setCurrentTime(clamped);
 
       if (selectedAudioIndex !== 'default') {
-        setResumeTime(clamped);
+        const seekSec = Math.floor(clamped);
+        setResumeTime(seekSec);
+        setCurrentTime(seekSec);
         setIsBuffering(true);
       } else {
+        setCurrentTime(clamped);
         if (videoRef.current) {
           videoRef.current.currentTime = clamped;
         }
@@ -630,7 +622,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
   // Audio track switching
   const handleAudioTrackChange = (newAudioIdxStr: string) => {
     if (newAudioIdxStr === selectedAudioIndex) return;
-    setResumeTime(currentTime);
+    const seekSec = Math.floor(currentTime);
+    setResumeTime(seekSec);
+    setCurrentTime(seekSec);
     setSelectedAudioIndex(newAudioIdxStr);
     setIsBuffering(true);
     setPlaybackError(null);
@@ -687,10 +681,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   const handleCanPlay = () => {
     setIsBuffering(false);
-    if (selectedAudioIndex === 'default' && resumeTime > 0 && videoRef.current) {
-      videoRef.current.currentTime = resumeTime;
-      setResumeTime(0);
-    }
   };
 
   const handleWaiting = () => {
@@ -708,8 +698,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
 
   const handleTimeUpdate = () => {
     if (videoRef.current) {
-      const offset = selectedAudioIndex !== 'default' ? resumeTime : 0;
-      setCurrentTime(offset + videoRef.current.currentTime);
+      setCurrentTime(resumeTime + videoRef.current.currentTime);
     }
   };
 
@@ -820,15 +809,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                       : video.videoMediaMetadata.height >= 1080
                       ? '1080p'
                       : `${video.videoMediaMetadata.height}p`}
-                  </span>
-                )}
-                {selectedAudioIndex !== 'default' && (
-                  <span className={`px-1.5 py-0.5 rounded border ${
-                    audioMode === 'raw'
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                      : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
-                  }`}>
-                    {audioMode === 'raw' ? '⚡ Raw Audio (0 Lag)' : '320k Remux'}
                   </span>
                 )}
                 <span>HTTP Range</span>
@@ -969,25 +949,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
               <p className="text-xs text-red-300 mb-5 leading-relaxed">{playbackError.message}</p>
 
               <div className="flex flex-wrap items-center justify-center gap-2.5 w-full">
-                {audioTracks.length > 0 && (
-                  <button
-                    onClick={() => {
-                      setAudioMode('transcode');
-                      setPlaybackError(null);
-                    }}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium transition-all shadow"
-                  >
-                    Switch to AAC 320k Compatibility Remux
-                  </button>
-                )}
                 <button
                   onClick={() => {
-                    setMimeOverride('video/webm');
+                    setPlaybackError(null);
                     if (videoRef.current) videoRef.current.load();
                   }}
-                  className="px-4 py-2 bg-white/[0.05] hover:bg-white/[0.1] text-white rounded-xl text-xs font-medium transition-all"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium transition-all shadow"
                 >
-                  Try WebM
+                  Retry Playback
                 </button>
                 <button
                   onClick={handleCopyLink}
@@ -1154,40 +1123,19 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose }) => {
                     disabled={isProbingTracks && audioTracks.length === 0}
                     className="bg-transparent text-gray-300 text-xs focus:outline-none cursor-pointer pr-1"
                   >
-                    <option value="default" className="bg-[#0e111a] text-gray-200">
-                      Default Audio (Direct Stream)
-                    </option>
-                    {audioTracks.map((t) => (
-                      <option key={t.id} value={t.id.toString()} className="bg-[#0e111a] text-gray-200">
-                        {t.label}
+                    {audioTracks.length > 0 ? (
+                      audioTracks.map((t) => (
+                        <option key={t.id} value={t.id.toString()} className="bg-[#0e111a] text-gray-200">
+                          {t.label}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="0" className="bg-[#0e111a] text-gray-200">
+                        {isProbingTracks ? 'Detecting audio...' : 'Audio Track 1'}
                       </option>
-                    ))}
+                    )}
                   </select>
                 </div>
-
-                {/* Audio Mode Toggle: ⚡ Raw Audio (0 Latency) vs AAC 320k */}
-                {selectedAudioIndex !== 'default' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setResumeTime(currentTime);
-                      setAudioMode((prev) => (prev === 'raw' ? 'transcode' : 'raw'));
-                      setIsBuffering(true);
-                    }}
-                    className={`px-2 py-1 rounded-xl text-[10px] font-mono font-semibold transition-all border ${
-                      audioMode === 'raw'
-                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.15)] hover:bg-emerald-500/25'
-                        : 'bg-indigo-500/15 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/25'
-                    }`}
-                    title={
-                      audioMode === 'raw'
-                        ? 'Using 100% Raw Audio Passthrough (Zero CPU, Zero Latency). Click for AAC Remux.'
-                        : 'Using AAC 320k Compatibility Remux. Click for Raw Passthrough.'
-                    }
-                  >
-                    {audioMode === 'raw' ? '⚡ Raw Audio' : 'AAC 320k'}
-                  </button>
-                )}
 
                 {/* Subtitle Selector */}
                 <div className="flex items-center space-x-1 bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.06] rounded-xl px-2 py-1 transition-colors">

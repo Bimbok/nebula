@@ -1,6 +1,7 @@
 import React from 'react';
 import { GoogleDriveFile } from '../types';
 import VideoItem from './VideoItem';
+import MascotLogo from './MascotLogo';
 
 interface VideoGridProps {
   videos: GoogleDriveFile[];
@@ -11,11 +12,8 @@ const VideoGrid: React.FC<VideoGridProps> = ({ videos, onSelectVideo }) => {
   if (videos.length === 0) {
     return (
       <div className="text-center py-24 px-4">
-        <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center text-gray-500">
-          <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <rect x="2" y="4" width="20" height="16" rx="3" />
-            <path d="M10 9l5 3-5 3V9z" />
-          </svg>
+        <div className="mb-4 flex justify-center">
+          <MascotLogo size="lg" animated showBadge />
         </div>
         <h3 className="text-base font-semibold text-gray-300 mb-1">No Videos Found</h3>
         <p className="text-xs text-gray-500 max-w-sm mx-auto">

@@ -41,6 +41,23 @@ function isUsableWebVtt(contents: Buffer): boolean {
   return contents.includes(Buffer.from('-->'));
 }
 
+function getAudioTrackCodec(fileId: string, audioIndex: number): string | null {
+  const cached = trackMetadataCache.get(fileId);
+  if (cached?.audioTracks && cached.audioTracks[audioIndex]) {
+    return cached.audioTracks[audioIndex].codec;
+  }
+  const metaCacheFile = path.join(metaCacheDir, `${fileId}.json`);
+  if (fs.existsSync(metaCacheFile)) {
+    try {
+      const fileData = JSON.parse(fs.readFileSync(metaCacheFile, 'utf8'));
+      if (fileData.audioTracks && fileData.audioTracks[audioIndex]) {
+        return fileData.audioTracks[audioIndex].codec;
+      }
+    } catch {}
+  }
+  return null;
+}
+
 function streamProxyPlugin() {
   const handler = async (req: any, res: any, next: any) => {
     const rawUrl = req.url || '';
@@ -558,13 +575,13 @@ function streamProxyPlugin() {
 
       // -------------------------------------------------------------
       // Case A: Specific alternate audio track selected
-      // Default: Raw Audio Passthrough (-c:a copy) with ZERO processing overhead & zero lag
-      // Optional: mode=transcode for AAC 320k compatibility
+      // Smart Auto-Codec: Direct pass (-c:a copy) if natively playable by browsers (AAC, Opus, FLAC, MP3),
+      // or Studio Master AAC (320k) if proprietary (EAC3, AC3, DTS) with mathematical PTS zero-sync.
       // -------------------------------------------------------------
-      if (audioIndexStr !== null && audioIndexStr !== '' && audioIndexStr !== 'default') {
-        const audioIndex = parseInt(audioIndexStr, 10);
+      if (audioIndexStr !== null && audioIndexStr !== '') {
+        const audioIndex = parseInt(audioIndexStr, 10) || 0;
         const startTime = startTimeStr ? Math.max(0, parseFloat(startTimeStr)) : 0;
-        const mode = url.searchParams.get('mode') || 'raw';
+        const directAudioParam = url.searchParams.get('directAudio');
         const headersParam = `Authorization: Bearer ${token}\r\n`;
 
         res.statusCode = 200;
@@ -573,54 +590,43 @@ function streamProxyPlugin() {
         res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Transfer-Encoding', 'chunked');
+        res.setHeader('Content-Type', 'video/mp4');
 
-        let ffmpegArgs: string[];
-
-        if (mode === 'transcode') {
-          // Compatibility mode: transcode to high-bitrate 320k AAC
-          res.setHeader('Content-Type', 'video/mp4');
-          ffmpegArgs = [
-            '-loglevel', 'error',
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
-            '-ss', startTime.toString(),
-            '-headers', headersParam,
-            '-i', driveUrl,
-            '-copyts',
-            '-start_at_zero',
-            '-map', '0:v:0',
-            '-map', `0:a:${audioIndex}`,
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-b:a', '320k',
-            '-avoid_negative_ts', 'make_zero',
-            '-f', 'mp4',
-            '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-            'pipe:1',
-          ];
+        // Check if the track's audio codec is directly playable without processing
+        let isPlayable = false;
+        if (directAudioParam === '1' || directAudioParam === 'true') {
+          isPlayable = true;
+        } else if (directAudioParam === '0' || directAudioParam === 'false') {
+          isPlayable = false;
         } else {
-          // RAW AUDIO PASSTHROUGH (Default):
-          // Pass raw EAC3, AC3, AAC, FLAC, Opus streams directly with ZERO processing.
-          // Zero re-encoding = 0% CPU overhead, 0ms latency, impossible to desync
-          // because both video and audio packets are copied directly from the container.
-          res.setHeader('Content-Type', 'video/x-matroska');
-          ffmpegArgs = [
-            '-loglevel', 'error',
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
-            '-ss', startTime.toString(),
-            '-headers', headersParam,
-            '-i', driveUrl,
-            '-map', '0:v:0',
-            '-map', `0:a:${audioIndex}`,
-            '-c:v', 'copy',
-            '-c:a', 'copy',
-            '-f', 'matroska',
-            'pipe:1',
-          ];
+          const codec = getAudioTrackCodec(fileId, audioIndex);
+          if (codec && ['aac', 'opus', 'flac', 'mp3', 'vorbis', 'wav'].includes(codec.toLowerCase())) {
+            isPlayable = true;
+          }
         }
+
+        const audioArgs = isPlayable
+          ? ['-c:a', 'copy']
+          : ['-c:a', 'aac', '-b:a', '320k'];
+
+        const ffmpegArgs = [
+          '-loglevel', 'error',
+          '-reconnect', '1',
+          '-reconnect_streamed', '1',
+          '-reconnect_delay_max', '5',
+          '-noaccurate_seek',
+          '-ss', startTime.toString(),
+          '-headers', headersParam,
+          '-i', driveUrl,
+          '-map', '0:v:0',
+          '-map', `0:a:${audioIndex}`,
+          '-c:v', 'copy',
+          ...audioArgs,
+          '-avoid_negative_ts', 'make_zero',
+          '-f', 'mp4',
+          '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+          'pipe:1',
+        ];
 
         const ffmpeg = spawn('ffmpeg', ffmpegArgs);
         ffmpeg.stdout.pipe(res);
@@ -632,11 +638,20 @@ function streamProxyPlugin() {
           }
         });
 
+        let killed = false;
         const stopRemux = () => {
-          if (!res.writableEnded) ffmpeg.kill('SIGKILL');
+          if (!killed) {
+            killed = true;
+            try {
+              ffmpeg.stdout.destroy();
+              ffmpeg.kill('SIGKILL');
+            } catch {}
+          }
         };
         req.on('aborted', stopRemux);
+        req.on('close', stopRemux);
         res.on('close', stopRemux);
+        res.on('finish', stopRemux);
 
         ffmpeg.on('error', (err) => {
           console.error('[ffmpeg remux stream error]', err);

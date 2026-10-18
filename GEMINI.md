@@ -41,19 +41,21 @@ Google Drive API (alt=media)
 ## 3. Endpoints & Media Streaming Engine
 
 ### A. `/api/stream`
-* **Direct Mode (Default Audio Track):** Proxies incoming client `Range:` headers straight to Google Drive. Transmits raw bytes with zero re-encoding (100% lossless video and audio passthrough).
-* **Audio Track Switching & Streaming:**
-  * **⚡ Raw Audio Passthrough (Default Mode):**
-    * Uses `-c:v copy -c:a copy -f matroska` to demux and remux both video and audio directly at the packet level without ANY re-encoding.
-    * Eliminates 100% of CPU processing overhead and encoder buffer delays.
-    * Both streams are sliced from the identical container packet boundary, providing **mathematically guaranteed zero-lag, sample-accurate A/V synchronization**.
-    * Delivers bit-perfect original multi-channel surround sound (Dolby Digital Plus EAC3, AC3, FLAC, Opus, AAC).
-  * **AAC 320k Compatibility Remux (Optional Mode `mode=transcode`):**
-    * Fallback mode for legacy devices or Smart TVs that do not possess native EAC3/AC3 hardware decoders.
-    * Spawns `ffmpeg` with `-c:v copy` and `-c:a aac -b:a 320k` into a fragmented MP4 container.
+* **Smart Auto-Codec Audio Engine:**
+  * **⚡ Direct Bitstream Passthrough (Zero Processing):**
+    * For tracks using natively playable browser codecs (`aac`, `opus`, `flac`, `mp3`, `vorbis`), audio is directly passed packet-by-packet (`-c:a copy`) with **0% CPU overhead, 0ms latency, and untouched original fidelity**.
+  * **🎙️ Studio Master AAC 320k (Transparent Remux):**
+    * For proprietary codecs unsupported by desktop Chromium/Firefox (`eac3` / Dolby Digital Plus, `ac3`, `dts`, `truehd`), audio is seamlessly remuxed into pristine 320kbps multi-channel AAC (`-c:a aac -b:a 320k`).
+    * Preserves full 5.1 surround sound while eliminating the browser silence bug.
+  * **Mathematical PTS Zero-Sync:**
+    * Eliminates audio desync on seek by pairing `-noaccurate_seek -ss <start>` with `-avoid_negative_ts make_zero`, removing timestamp gaps and ensuring audio and video start together at PTS 0.000s.
+  * **Seamless & Invisible to User:**
+    * The user simply chooses their desired audio track (Track 1, Track 2, etc.). No duplicate "Raw" or "Default" options and no manual toggle switches clutter the interface.
   * **Seeking & Lifecycle:**
-    * `-ss <start>` before `-i` for instantaneous keyframe input seeking.
-    * Uses `req.on('aborted')` and `res.on('close')` safeguards to terminate FFmpeg cleanly on client disconnects or track switching.
+    * `-noaccurate_seek -ss <start>` before `-i` for instantaneous network-level keyframe input seeking.
+    * Bulletproof process cleanup: `req.on('aborted')`, `req.on('close')`, `res.on('close')`, and `res.on('finish')` immediately kill FFmpeg and destroy stdout to prevent zombie processes.
+  * **Fallback Direct Range Mode:**
+    * Raw byte-range proxying directly to Google Drive remains active for external media players (VLC, MPV) or download requests without `audioIndex`.
 
 ### B. `/api/tracks`
 * Probes audio streams, subtitle streams, and container duration via `ffprobe`.
@@ -110,12 +112,16 @@ Google Drive API (alt=media)
 ```
 ├── App.tsx                     # Main layout, search capsule, infinite scroll, auth state
 ├── components/
-│   ├── Header.tsx              # Minimalist glass header, LAN pulse badge, TV share modal
+│   ├── Header.tsx              # Minimalist glass header, LAN pulse badge, TV share modal, brand mascot
 │   ├── Loader.tsx              # Glowing cinematic ring spinner
-│   ├── Login.tsx               # Nebula welcome portal, Google OAuth trigger
-│   ├── VideoGrid.tsx           # Responsive media grid & empty states
+│   ├── Login.tsx               # Nebula welcome portal, Google OAuth trigger, hero mascot
+│   ├── MascotLogo.tsx          # Animated Detective Panda mascot & official logo component
+│   ├── VideoGrid.tsx           # Responsive media grid & empty states with mascot
 │   ├── VideoItem.tsx           # 16:9 thumbnail cards with resolution chips & hover zoom
 │   └── VideoPlayer.tsx         # Cinema player: timeline scrubber, rVFC subtitle sync, track pickers
+├── public/
+│   ├── favicon.svg             # Standalone colored Detective Panda SVG favicon
+│   └── mascot.svg              # Standalone high-res mascot SVG asset
 ├── services/
 │   └── googleDriveService.ts   # Drive API v3 paginated queries with MIME filters
 ├── index.css                   # Custom range sliders, dark minimalist scrollbars, glow keyframes
@@ -123,3 +129,28 @@ Google Drive API (alt=media)
 ├── vite.config.ts              # Vite config + all /api/ backend streaming proxy handlers
 └── .cache/                     # Local disk caches (metadata, subtitles, thumbnails)
 ```
+
+---
+
+## 8. Mascot & Brand Identity (Detective Panda)
+
+* **Origin & Geometry:**
+  * Decomposed from `/home/bimbok/Downloads/tibbixel-dot-com-37713-svg.svg` compound paths into 10 discrete anatomical and apparel vector layers.
+  * Preserves original vector geometry and curvature.
+* **Palette:**
+  * **Fedora Hat:** Cyber Obsidian slate (`#0f172a` -> `#1e293b` -> `#334155`).
+  * **Hat Ribbon Band:** Neon Cyan-to-Electric-Violet gradient (`#06b6d4` -> `#6366f1` -> `#a855f7`).
+  * **Eyes & Irises:** Electric Cyan Nebula glow (`#06b6d4` -> `#38bdf8`) with pure white star sparkles (`#ffffff`).
+  * **Panda Fur:** Celestial Platinum White (`#ffffff` -> `#f1f5f9` -> `#cbd5e1`).
+  * **Eye Patches & Chin:** Midnight Obsidian charcoal (`#080910` -> `#181928`).
+* **Animations:**
+  * Gentle organic breathing float (`mascotBreathing`).
+  * Dynamic hat band pulse with ambient neon drop-shadow (`bandPulse`).
+  * Staggered double-eye twinkle sparkles (`eyeTwinkle`).
+* **Integration Points:**
+  * Browser Favicon (`/favicon.svg`).
+  * App Header Brand Lockup (`<MascotLogo size="sm" animated />`).
+  * Welcome Portal Hero Avatar (`<MascotLogo size="xl" animated showBadge />`).
+  * Empty & Search Results States (`<MascotLogo size="lg" animated showBadge />`).
+  * Library Loading State (`<MascotLogo size="xl" animated showBadge />`).
+

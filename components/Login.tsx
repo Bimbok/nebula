@@ -1,5 +1,6 @@
 import React from 'react';
 import Loader from './Loader';
+import MascotLogo from './MascotLogo';
 
 interface LoginProps {
   onLogin: () => void;
@@ -30,12 +31,9 @@ const Login: React.FC<LoginProps> = ({ onLogin, isLoading }) => {
       <div className="absolute top-1/3 left-1/3 w-[300px] h-[200px] bg-purple-500/10 blur-[100px] rounded-full pointer-events-none" />
 
       <div className="relative z-10 w-full max-w-lg bg-[#0e111a]/80 backdrop-blur-2xl border border-white/[0.08] p-8 sm:p-10 rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.8)] text-center animate-pop-in">
-        {/* Glow emblem */}
-        <div className="mx-auto w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-500/20 to-purple-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400 mb-6 shadow-[0_0_25px_rgba(99,102,241,0.2)]">
-          <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
-            <rect x="2" y="3" width="20" height="14" rx="2" />
-            <path d="M8 21h8M12 17v4" />
-          </svg>
+        {/* Mascot Emblem */}
+        <div className="mb-6 flex justify-center">
+          <MascotLogo size="xl" animated showBadge />
         </div>
 
         <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white mb-2">
