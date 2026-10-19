@@ -647,6 +647,11 @@ const handler = async (req: any, res: any, next: any) => {
         res.setHeader('Transfer-Encoding', 'chunked');
         res.setHeader('Content-Type', 'video/mp4');
 
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
+
         // Check if the track's audio codec is directly playable without processing
         let isPlayable = false;
         if (directAudioParam === '1' || directAudioParam === 'true') {
@@ -668,7 +673,11 @@ const handler = async (req: any, res: any, next: any) => {
           '-loglevel', 'error',
           '-reconnect', '1',
           '-reconnect_streamed', '1',
-          '-reconnect_delay_max', '5',
+          '-reconnect_on_network_error', '1',
+          '-reconnect_delay_max', '2',
+          '-multiple_requests', '1',
+          '-tcp_nodelay', '1',
+          '-recv_buffer_size', '4194304',
           '-noaccurate_seek',
           '-ss', startTime.toString(),
           '-headers', headersParam,
@@ -680,6 +689,8 @@ const handler = async (req: any, res: any, next: any) => {
           '-avoid_negative_ts', 'make_zero',
           '-f', 'mp4',
           '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+          '-frag_duration', '1000000',
+          '-flush_packets', '1',
           'pipe:1',
         ];
 
@@ -755,6 +766,7 @@ const handler = async (req: any, res: any, next: any) => {
 
       res.setHeader('Content-Type', contentType);
       res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'private, no-transform, max-age=3600');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Headers', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');

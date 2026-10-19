@@ -222,6 +222,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   const [isBuffering, setIsBuffering] = useState<boolean>(true);
   const [playbackError, setPlaybackError] = useState<{ message: string; code?: number } | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
+  const [bufferedPercent, setBufferedPercent] = useState<number>(0);
+  const prevStreamUrlRef = useRef<string>('');
 
   // Volume & Audio State
   const [volume, setVolume] = useState<number>(1);
@@ -804,6 +806,46 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     e.target.value = '';
   };
 
+  // Calculate buffer lookahead percentage
+  const updateBuffered = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || knownTotalDuration <= 0) return;
+    const b = v.buffered;
+    if (b.length > 0) {
+      const ct = v.currentTime;
+      for (let i = 0; i < b.length; i++) {
+        if (b.start(i) <= ct + 0.5 && ct <= b.end(i) + 0.5) {
+          const absEnd = resumeTime + b.end(i);
+          const pct = Math.min(100, Math.max(0, (absEnd / knownTotalDuration) * 100));
+          setBufferedPercent(pct);
+          return;
+        }
+      }
+      const lastEnd = resumeTime + b.end(b.length - 1);
+      const pct = Math.min(100, Math.max(0, (lastEnd / knownTotalDuration) * 100));
+      setBufferedPercent(pct);
+    }
+  }, [knownTotalDuration, resumeTime]);
+
+  // Seamless stream reload without remounting the video element
+  useEffect(() => {
+    if (!prevStreamUrlRef.current) {
+      prevStreamUrlRef.current = currentStreamUrl;
+      return;
+    }
+    if (prevStreamUrlRef.current !== currentStreamUrl) {
+      prevStreamUrlRef.current = currentStreamUrl;
+      if (videoRef.current) {
+        setIsBuffering(true);
+        videoRef.current.load();
+        if (isPlaying) {
+          const p = videoRef.current.play();
+          if (p !== undefined) p.catch(() => {});
+        }
+      }
+    }
+  }, [currentStreamUrl, isPlaying]);
+
   // Video event handlers
   const handleLoadStart = () => {
     setIsBuffering(true);
@@ -847,6 +889,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     if (videoRef.current) {
       const absTime = resumeTime + videoRef.current.currentTime;
       setCurrentTime(absTime);
+      updateBuffered();
 
       // Throttle saving progress to localStorage every 4 seconds
       if (Math.abs(absTime - lastSavedTimeRef.current) >= 4) {
@@ -1050,12 +1093,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         >
           <video
             ref={videoRef}
-            key={currentStreamUrl}
             src={currentStreamUrl}
             controls={false}
             autoPlay
             playsInline
-            preload="metadata"
+            preload="auto"
             style={getVideoStyle()}
             onContextMenu={(e) => e.preventDefault()}
             onLoadStart={handleLoadStart}
@@ -1064,6 +1106,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
             onPlaying={handlePlaying}
             onPause={handlePause}
             onTimeUpdate={handleTimeUpdate}
+            onProgress={updateBuffered}
             onError={handleError}
             className="focus:outline-none pointer-events-none"
           >
@@ -1263,9 +1306,15 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
                 onMouseLeave={handleScrubberMouseLeave}
                 className="relative h-2 bg-white/[0.1] hover:h-2.5 rounded-full cursor-pointer transition-all duration-200 overflow-hidden group flex items-center"
               >
+                {/* Buffered Lookahead Bar */}
+                <div
+                  className="absolute left-0 top-0 bottom-0 bg-white/[0.22] rounded-full transition-all duration-150 pointer-events-none"
+                  style={{ width: `${Math.min(100, Math.max(progressPercent, bufferedPercent))}%` }}
+                />
+
                 {/* Played Progress Gradient Bar */}
                 <div
-                  className="h-full bg-gradient-to-r from-indigo-500 via-indigo-400 to-purple-400 rounded-full transition-all duration-75 relative shadow-[0_0_10px_rgba(99,102,241,0.5)]"
+                  className="h-full bg-gradient-to-r from-indigo-500 via-indigo-400 to-purple-400 rounded-full transition-all duration-75 relative shadow-[0_0_10px_rgba(99,102,241,0.5)] z-10 pointer-events-none"
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
