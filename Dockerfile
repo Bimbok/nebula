@@ -18,9 +18,10 @@ COPY . .
 # Build frontend and production streaming server
 RUN npm run build
 
-# Default port for local and cloud deployments
+# Expose ports for both local (3000) and Render cloud hosting (10000)
 ENV PORT=3000
 EXPOSE 3000
+EXPOSE 10000
 
 # Run the production streaming server
 CMD ["node", "server.js"]
