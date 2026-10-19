@@ -10,48 +10,52 @@ Nebula-Panda is an enterprise-grade media streaming platform designed to stream 
 
 ---
 
+</div>
+
 ## Architecture Overview
 
 Nebula-Panda bridges Google Drive's REST API and client-side media decoders through a dedicated high-throughput streaming and transmuxing proxy engine.
 
-```
-                      +----------------------------------+
-                      |      Google Drive API (v3)       |
-                      |   alt=media / HTTP Range Stream  |
-                      +-----------------+----------------+
-                                        |
-                                        v
-                      +----------------------------------+
-                      |   Nebula-Panda Streaming Proxy   |
-                      |    (Node.js / Vite Middleware)   |
-                      +----+-------------+-------------+-+
-                           |             |             |
-           Direct Range    |             | Metadata    | Subtitles
-           Passthrough     |             | Inspection  | Extraction
-           (HTTP 206)      |             |             |
-                           v             v             v
-                     +-----------+ +-----------+ +-----------+
-                     |  /stream  | |  /tracks  | |/subtitles |
-                     +-----+-----+ +-----+-----+ +-----+-----+
-                           |             |             |
-                           +------+      |      +------+
-                                  |      |      |
-                                  v      v      v
-                      +----------------------------------+
-                      |       Nebula-Panda Client        |
-                      |  React 19 / rVFC Frame Pipeline  |
-                      +----------------------------------+
-                                        |
-                 +----------------------+----------------------+
-                 |                      |                      |
-                 v                      v                      v
-        +------------------+  +-------------------+  +-------------------+
-        |  Hardware-Clocked|  |   Cross-Device    |  |  Discord Gateway  |
-        |  Subtitles (rVFC)|  |  LAN Token Share  |  |   Rich Presence   |
-        +------------------+  +-------------------+  +-------------------+
+```mermaid
+flowchart TD
+    subgraph Cloud ["Google Cloud Infrastructure"]
+        GDrive["Google Drive API v3<br/>(alt=media Range Stream)"]
+    end
+
+    subgraph Proxy ["Nebula-Panda Streaming Proxy Engine (Node.js / Vite)"]
+        StreamEP["/api/stream<br/>Direct Range Passthrough OR FFmpeg AAC 320k Remux"]
+        TracksEP["/api/tracks<br/>ffprobe Metadata Inspection & Duration Probe"]
+        SubsEP["/api/subtitles<br/>FFmpeg WebVTT Subtitle Extractor"]
+        ThumbEP["/api/thumbnail<br/>FFmpeg Frame Grabber & Proxy Cache"]
+        Cache[("Tiered Memory & Disk Cache")]
+    end
+
+    subgraph Client ["Nebula-Panda Cinema Client (React 19)"]
+        Player["Video Player Pipeline<br/>(4 MB Socket Cushion + Lookahead Buffer)"]
+        SyncEngine["Subtitle Sync Engine<br/>(Hardware-Clocked requestVideoFrameCallback)"]
+        Presence["Discord Gateway Rich Presence Bridge"]
+        LANShare["LAN Streaming & Zero-Login Token Handoff"]
+    end
+
+    GDrive --> StreamEP
+    GDrive --> TracksEP
+    GDrive --> SubsEP
+    GDrive --> ThumbEP
+
+    TracksEP <--> Cache
+    SubsEP <--> Cache
+    ThumbEP <--> Cache
+
+    StreamEP --> Player
+    SubsEP --> SyncEngine
+    Player --> SyncEngine
+    Player --> Presence
+    Player --> LANShare
 ```
 
 ---
+
+<div align="center">
 
 ## Core Engineering Highlights
 
@@ -136,6 +140,8 @@ Node.js Version 18.0.0 or higher
 
 FFmpeg & FFprobe installed and accessible in the system PATH
 
+</div>
+
 ```bash
 # Debian / Ubuntu
 sudo apt update && sudo apt install -y ffmpeg
@@ -147,6 +153,8 @@ sudo pacman -S ffmpeg
 brew install ffmpeg
 ```
 
+<div align="center">
+
 Google Cloud Project with the Google Drive API enabled and an OAuth 2.0 Client ID configured
 
 ---
@@ -155,18 +163,28 @@ Google Cloud Project with the Google Drive API enabled and an OAuth 2.0 Client I
 
 Clone the repository
 
+</div>
+
 ```bash
 git clone https://github.com/Bimbok/nebula.git
 cd nebula
 ```
 
+<div align="center">
+
 Install project dependencies
+
+</div>
 
 ```bash
 npm install
 ```
 
+<div align="center">
+
 Configure environment variables in `.env.local`
+
+</div>
 
 ```env
 GOOGLE_CLIENT_ID=your_oauth_client_id.apps.googleusercontent.com
@@ -174,11 +192,17 @@ GOOGLE_CLIENT_SECRET=your_oauth_client_secret
 PORT=3000
 ```
 
+<div align="center">
+
 Launch the development server
+
+</div>
 
 ```bash
 npm run dev
 ```
+
+<div align="center">
 
 Open `http://localhost:3000` in your browser
 
@@ -188,19 +212,29 @@ Open `http://localhost:3000` in your browser
 
 Build optimized client and standalone server bundles
 
+</div>
+
 ```bash
 npm run build
 ```
 
+<div align="center">
+
 Launch the production server
+
+</div>
 
 ```bash
 npm start
 ```
 
+<div align="center">
+
 ---
 
 ### Docker Deployment
+
+</div>
 
 ```dockerfile
 FROM node:22-alpine
@@ -221,6 +255,8 @@ ENV NODE_ENV=production
 
 CMD ["node", "server.js"]
 ```
+
+<div align="center">
 
 ---
 
