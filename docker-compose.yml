@@ -1,0 +1,16 @@
+services:
+  nebula-panda:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nebula-panda
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.local
+    volumes:
+      - nebula_cache:/app/.cache
+
+volumes:
+  nebula_cache:

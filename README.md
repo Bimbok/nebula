@@ -232,28 +232,60 @@ npm start
 
 ---
 
-### Docker Deployment
+## Docker Deployment
+
+Build the container image directly from source
 
 </div>
 
-```dockerfile
-FROM node:22-alpine
+```bash
+docker build -t nebula-panda .
+```
 
-RUN apk add --no-cache ffmpeg
+<div align="center">
 
-WORKDIR /app
+Run the container using the environment file
 
-COPY package*.json ./
-RUN npm ci
+</div>
 
-COPY . .
-RUN npm run build
+```bash
+docker run -d \
+  --name nebula-panda \
+  -p 3000:3000 \
+  --env-file .env.local \
+  -v nebula_cache:/app/.cache \
+  --restart unless-stopped \
+  nebula-panda
+```
 
-EXPOSE 3000
-ENV PORT=3000
-ENV NODE_ENV=production
+<div align="center">
 
-CMD ["node", "server.js"]
+Or launch in one command using Docker Compose
+
+</div>
+
+```bash
+docker compose up -d --build
+```
+
+<div align="center">
+
+View live container logs
+
+</div>
+
+```bash
+docker logs -f nebula-panda
+```
+
+<div align="center">
+
+Stop the running container
+
+</div>
+
+```bash
+docker stop nebula-panda
 ```
 
 <div align="center">

@@ -18,9 +18,9 @@ COPY . .
 # Build frontend and production streaming server
 RUN npm run build
 
-# Render injects the PORT environment variable
-ENV PORT=10000
-EXPOSE 10000
+# Default port for local and cloud deployments
+ENV PORT=3000
+EXPOSE 3000
 
 # Run the production streaming server
 CMD ["node", "server.js"]
