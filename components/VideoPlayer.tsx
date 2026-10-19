@@ -780,9 +780,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         setActiveCueText(immediateText);
       }
 
-      if (selectedAudioIndex !== 'default') {
+      if (selectedAudioIndex !== 'default' || clamped < resumeTime) {
         // All discovered tracks use numeric IDs (for example "0"), so this path
-        // restarts the stream instead of changing the native media timeline.
+        // restarts the stream instead of changing the native media timeline. Also
+        // restart if seeking before the stream's current startTime.
         pendingStreamSeekRef.current = true;
         const seekSec = Math.floor(clamped);
         seekTargetTimeRef.current = seekSec;
@@ -793,7 +794,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         pendingStreamSeekRef.current = false;
         setCurrentTime(clamped);
         if (videoRef.current) {
-          videoRef.current.currentTime = clamped;
+          // video.currentTime is relative to the stream's startTime, whereas the
+          // scrubber and subtitle cues use the absolute movie timestamp.
+          videoRef.current.currentTime = Math.max(0, clamped - resumeTime);
         }
       }
 
