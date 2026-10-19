@@ -348,6 +348,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   const [isProbingTracks, setIsProbingTracks] = useState<boolean>(true);
   const [isSubtitleLoading, setIsSubtitleLoading] = useState<boolean>(false);
   const [subtitleSize, setSubtitleSize] = useState<'normal' | 'large'>('normal');
+  // Positive values delay subtitles; negative values show them earlier.
+  const [subtitleOffset, setSubtitleOffset] = useState<number>(0);
 
   // Last saved timestamp tracker for throttling
   const lastSavedTimeRef = useRef<number>(initialTime);
@@ -385,10 +387,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
           ? seekTargetTimeRef.current
           : resumeTime + (player?.currentTime ?? 0);
 
-      const text = findActiveCueText(subtitleCues, time);
+      const text = findActiveCueText(subtitleCues, time - subtitleOffset);
       setActiveCueText((prev) => (prev === text ? prev : text));
     },
-    [selectedSubtitleId, subtitleCues, resumeTime]
+    [selectedSubtitleId, subtitleCues, resumeTime, subtitleOffset]
   );
 
   useEffect(() => {
@@ -1753,15 +1755,35 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
                   </button>
                 </div>
 
-                {/* Subtitle Size Toggle */}
+                {/* Subtitle timing offset and size controls */}
                 {selectedSubtitleId !== 'off' && (
-                  <button
-                    onClick={() => setSubtitleSize((prev) => (prev === 'normal' ? 'large' : 'normal'))}
-                    className="px-2 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-xl text-[10px] font-mono transition-colors shrink-0"
-                    title="Toggle Subtitle Size"
-                  >
-                    {subtitleSize === 'normal' ? '1x' : '1.5x'}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => setSubtitleOffset((prev) => Math.max(-10, Math.round((prev - 0.5) * 10) / 10))}
+                      className="px-1.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-lg text-[10px] font-mono transition-colors shrink-0"
+                      title="Show subtitles 0.5 seconds earlier"
+                      aria-label="Subtitles 0.5 seconds earlier"
+                    >−0.5</button>
+                    <button
+                      onClick={() => setSubtitleOffset(0)}
+                      className="px-1.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-lg text-[10px] font-mono transition-colors shrink-0"
+                      title="Reset subtitle timing offset"
+                      aria-label="Reset subtitle timing offset"
+                    >{subtitleOffset === 0 ? 'SYNC' : (subtitleOffset > 0 ? '+' : '') + subtitleOffset.toFixed(1) + 's'}</button>
+                    <button
+                      onClick={() => setSubtitleOffset((prev) => Math.min(10, Math.round((prev + 0.5) * 10) / 10))}
+                      className="px-1.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-lg text-[10px] font-mono transition-colors shrink-0"
+                      title="Show subtitles 0.5 seconds later"
+                      aria-label="Subtitles 0.5 seconds later"
+                    >+0.5</button>
+                    <button
+                      onClick={() => setSubtitleSize((prev) => (prev === 'normal' ? 'large' : 'normal'))}
+                      className="px-2 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-xl text-[10px] font-mono transition-colors shrink-0"
+                      title="Toggle Subtitle Size"
+                    >
+                      {subtitleSize === 'normal' ? '1x' : '1.5x'}
+                    </button>
+                  </>
                 )}
 
                 {/* Desktop Aspect Ratio Button */}
