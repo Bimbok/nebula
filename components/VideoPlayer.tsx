@@ -173,13 +173,13 @@ function parseWebVttCues(vttText: string): SubtitleCue[] {
   return cues;
 }
 
-const aspectModes: { key: AspectRatioMode; label: string; icon: string }[] = [
-  { key: 'fit', label: 'Fit (Original)', icon: '⊡' },
-  { key: 'crop', label: 'Crop (Zoom to Fill)', icon: '✂' },
-  { key: 'stretch', label: 'Stretch (Full)', icon: '↔' },
-  { key: '21:9', label: '21:9 (Cinemascope)', icon: '🎬' },
-  { key: '16:9', label: '16:9 (Widescreen)', icon: '📺' },
-  { key: '4:3', label: '4:3 (Classic)', icon: '📼' },
+const aspectModes: { key: AspectRatioMode; label: string }[] = [
+  { key: 'fit', label: 'Fit (Original)' },
+  { key: 'crop', label: 'Crop (Zoom to Fill)' },
+  { key: 'stretch', label: 'Stretch (Full)' },
+  { key: '21:9', label: '21:9 (Cinemascope)' },
+  { key: '16:9', label: '16:9 (Widescreen)' },
+  { key: '4:3', label: '4:3 (Classic)' },
 ];
 
 const formatTimestamp = (totalSeconds: number): string => {
@@ -517,7 +517,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       const idx = aspectModes.findIndex((m) => m.key === prev);
       const nextIdx = (idx + 1) % aspectModes.length;
       const nextMode = aspectModes[nextIdx];
-      setShowAspectToast(`${nextMode.icon} ${nextMode.label}`);
+      setShowAspectToast(nextMode.label);
       return nextMode.key;
     });
   }, []);
@@ -1194,6 +1194,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
           {/* Aspect Ratio HUD Toast */}
           {showAspectToast && (
             <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-black/80 backdrop-blur-xl border border-indigo-500/40 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-2xl animate-pop-in flex items-center space-x-2 pointer-events-none">
+              <Icons.Aspect className="w-3.5 h-3.5 text-indigo-400" />
               <span>{showAspectToast}</span>
             </div>
           )}

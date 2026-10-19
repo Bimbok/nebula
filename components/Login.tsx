@@ -16,9 +16,9 @@ const GoogleIcon: React.FC = () => (
   </svg>
 );
 
-const FeatureTag: React.FC<{ label: string; icon: string }> = ({ label, icon }) => (
+const FeatureTag: React.FC<{ label: string; icon: React.ReactNode }> = ({ label, icon }) => (
   <div className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.05] text-xs text-gray-300">
-    <span className="text-indigo-400 font-mono text-[11px]">{icon}</span>
+    <span className="text-indigo-400 shrink-0">{icon}</span>
     <span>{label}</span>
   </div>
 );
@@ -37,7 +37,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, isLoading }) => {
         </div>
 
         <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white mb-2">
-          Nebula Cinema
+          Nebula-Panda Cinema
         </h2>
         <p className="text-xs sm:text-sm text-gray-400 max-w-sm mx-auto mb-8 leading-relaxed">
           High-fidelity cinema streaming directly from your Google Drive with zero local storage requirements.
@@ -45,10 +45,41 @@ const Login: React.FC<LoginProps> = ({ onLogin, isLoading }) => {
 
         {/* Feature badges */}
         <div className="grid grid-cols-2 gap-2 mb-8 text-left">
-          <FeatureTag icon="⚡" label="Instant HTTP Range" />
-          <FeatureTag icon="🎧" label="Multi-Track Audio" />
-          <FeatureTag icon="💬" label="Embedded Subtitles" />
-          <FeatureTag icon="📺" label="LAN Casting (TV/Phone)" />
+          <FeatureTag
+            icon={
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+            }
+            label="Instant HTTP Range"
+          />
+          <FeatureTag
+            icon={
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+              </svg>
+            }
+            label="Multi-Track Audio"
+          />
+          <FeatureTag
+            icon={
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="M7 15h4M15 15h2M7 11h2M13 11h4" />
+              </svg>
+            }
+            label="Embedded Subtitles"
+          />
+          <FeatureTag
+            icon={
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                <rect x="2" y="7" width="20" height="15" rx="2" />
+                <polyline points="17 2 12 7 7 2" />
+              </svg>
+            }
+            label="LAN Casting (TV/Phone)"
+          />
         </div>
 
         {/* Sign in button */}

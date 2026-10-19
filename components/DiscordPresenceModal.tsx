@@ -214,7 +214,9 @@ const DiscordPresenceModal: React.FC<DiscordPresenceModalProps> = ({ isOpen, onC
             <div className="bg-[#08090e]/95 border border-indigo-500/30 rounded-2xl p-4 text-xs text-gray-300 space-y-3 animate-pop-in shadow-xl">
               <div className="flex items-center justify-between border-b border-white/[0.06] pb-2">
                 <p className="text-xs text-indigo-300 font-semibold flex items-center space-x-1.5">
-                  <span>🔑</span>
+                  <svg className="w-3.5 h-3.5 text-indigo-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 0 1 2 2m4 0a6 6 0 0 1-7.743 5.743L11 17H9v2H7v2H4a1 1 0 0 1-1-1v-2.586a1 1 0 0 1 .293-.707l5.964-5.964A6 6 0 1 1 21 9z" />
+                  </svg>
                   <span>How to get your Discord token (Takes 5 seconds)</span>
                 </p>
                 <span className="text-[10px] text-emerald-400 font-mono font-medium">100% Reliable</span>
@@ -244,7 +246,10 @@ const DiscordPresenceModal: React.FC<DiscordPresenceModalProps> = ({ isOpen, onC
               </div>
 
               <div className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-2.5 text-[10px] text-gray-400 flex items-center space-x-2">
-                <span>🔒</span>
+                <svg className="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
                 <span>Your token is saved exclusively in your browser's local storage and is never uploaded anywhere.</span>
               </div>
             </div>
@@ -264,7 +269,7 @@ const DiscordPresenceModal: React.FC<DiscordPresenceModalProps> = ({ isOpen, onC
             <label className="flex items-center justify-between cursor-pointer">
               <div>
                 <span className="text-xs text-gray-300">Sync Custom Status Text</span>
-                <p className="text-[10px] text-gray-500">e.g. 🎬 Watching Dark • Season 1 Episode 10</p>
+                <p className="text-[10px] text-gray-500">e.g. Watching Dark • Season 1 Episode 10</p>
               </div>
               <input
                 type="checkbox"

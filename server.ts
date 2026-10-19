@@ -894,5 +894,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`\n🌌 Nebula Cinema Server running on http://${HOST}:${PORT}`);
+  console.log(`\nNebula-Panda Cinema Server running on http://${HOST}:${PORT}`);
 });
