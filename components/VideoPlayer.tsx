@@ -109,12 +109,72 @@ const Icons = {
 };
 
 function convertSrtToVtt(srtText: string): string {
-  let vtt = 'WEBVTT\n\n';
-  vtt += srtText
+  const normalized = srtText
+    .replace(/^\uFEFF/, '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
-  return vtt;
+    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
+    .trim();
+
+  return 'WEBVTT\n\n' + normalized + '\n';
+}
+
+// Convert SubStation Alpha / Advanced SubStation Alpha subtitles to WebVTT.
+// Dialogue fields are split using the [Events] Format declaration so commas in
+// subtitle text are preserved. ASS positioning and styling are simplified.
+function convertAssToVtt(assText: string): string {
+  const lines = assText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  let eventFields: string[] = [];
+  const cues: string[] = [];
+
+  const toVttTime = (value: string): string | null => {
+    const match = value.trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[.](\d{1,2})$/);
+    if (!match) return null;
+    const centiseconds = match[4].padEnd(2, '0').slice(0, 2);
+    return match[1].padStart(2, '0') + ':' + match[2] + ':' + match[3] + '.' + centiseconds + '0';
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/^\[Events\]/i.test(line)) {
+      eventFields = [];
+      continue;
+    }
+    if (/^\[/.test(line)) {
+      eventFields = [];
+      continue;
+    }
+    if (/^Format\s*:/i.test(line) && eventFields.length === 0) {
+      eventFields = line.slice(line.indexOf(':') + 1).split(',').map((field) => field.trim().toLowerCase());
+      continue;
+    }
+    if (!/^Dialogue\s*:/i.test(line) || eventFields.length === 0) continue;
+
+    const values = line.slice(line.indexOf(':') + 1).trim().split(',');
+    if (values.length < eventFields.length) continue;
+    const fields: Record<string, string> = {};
+    eventFields.forEach((field, index) => {
+      fields[field] = index === eventFields.length - 1
+        ? values.slice(index).join(',')
+        : values[index] ?? '';
+    });
+
+    const start = toVttTime(fields.start || '');
+    const end = toVttTime(fields.end || '');
+    const text = (fields.text || '')
+      .replace(/\{[^}]*\}/g, '')
+      .replace(/\\[Nn]/g, '\n')
+      .replace(/\\h/g, ' ')
+      .replace(/<[^>]*>/g, '')
+      .split('\n')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join('\n');
+
+    if (start && end && text) cues.push(start + ' --> ' + end + '\n' + text);
+  }
+
+  return 'WEBVTT\n\n' + cues.join('\n\n') + (cues.length ? '\n\n' : '');
 }
 
 function parseVttTimestamp(str: string): number {
@@ -288,6 +348,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   const [isProbingTracks, setIsProbingTracks] = useState<boolean>(true);
   const [isSubtitleLoading, setIsSubtitleLoading] = useState<boolean>(false);
   const [subtitleSize, setSubtitleSize] = useState<'normal' | 'large'>('normal');
+  // Positive values delay subtitles; negative values show them earlier.
+  const [subtitleOffset, setSubtitleOffset] = useState<number>(0);
 
   // Last saved timestamp tracker for throttling
   const lastSavedTimeRef = useRef<number>(initialTime);
@@ -325,10 +387,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
           ? seekTargetTimeRef.current
           : resumeTime + (player?.currentTime ?? 0);
 
-      const text = findActiveCueText(subtitleCues, time);
+      const text = findActiveCueText(subtitleCues, time - subtitleOffset);
       setActiveCueText((prev) => (prev === text ? prev : text));
     },
-    [selectedSubtitleId, subtitleCues, resumeTime]
+    [selectedSubtitleId, subtitleCues, resumeTime, subtitleOffset]
   );
 
   useEffect(() => {
@@ -926,9 +988,26 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       const content = event.target?.result as string;
       if (!content) return;
 
-      let vttContent = content;
-      if (file.name.endsWith('.srt')) {
+      const extension = file.name.split('.').pop()?.toLowerCase();
+      let vttContent: string;
+      if (extension === 'srt') {
         vttContent = convertSrtToVtt(content);
+      } else if (extension === 'ass' || extension === 'ssa') {
+        vttContent = convertAssToVtt(content);
+      } else if (extension === 'vtt') {
+        vttContent = content.replace(/^\uFEFF/, '');
+        if (!/^WEBVTT(?:\s|$)/.test(vttContent.trimStart())) {
+          window.alert('This VTT file is missing the WEBVTT header.');
+          return;
+        }
+      } else {
+        window.alert('Unsupported subtitle format. Please use .srt, .vtt, .ass, or .ssa.');
+        return;
+      }
+
+      if (!vttContent.includes('-->')) {
+        window.alert('No valid subtitle cues were found in this file.');
+        return;
       }
 
       const blob = new Blob([vttContent], { type: 'text/vtt' });
@@ -939,7 +1018,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         streamIndex: -1,
         codec: 'WebVTT',
         language: 'custom',
-        label: `File: ${file.name}`,
+        label: 'File: ' + file.name,
         isCustom: true,
         blobUrl: blobUrl,
       };
@@ -1663,28 +1742,48 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".srt,.vtt"
+                    accept=".srt,.vtt,.ass,.ssa"
                     onChange={handleLocalSubtitleUpload}
                     className="hidden"
                   />
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    title="Upload local .srt subtitle"
+                    title="Upload local subtitle (.srt, .vtt, .ass, .ssa)"
                     className="text-[10px] text-gray-400 hover:text-white px-1 font-mono hover:bg-white/[0.08] rounded transition-colors shrink-0"
                   >
-                    +SRT
+                    +SUB
                   </button>
                 </div>
 
-                {/* Subtitle Size Toggle */}
+                {/* Subtitle timing offset and size controls */}
                 {selectedSubtitleId !== 'off' && (
-                  <button
-                    onClick={() => setSubtitleSize((prev) => (prev === 'normal' ? 'large' : 'normal'))}
-                    className="px-2 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-xl text-[10px] font-mono transition-colors shrink-0"
-                    title="Toggle Subtitle Size"
-                  >
-                    {subtitleSize === 'normal' ? '1x' : '1.5x'}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => setSubtitleOffset((prev) => Math.max(-10, Math.round((prev - 0.5) * 10) / 10))}
+                      className="px-1.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-lg text-[10px] font-mono transition-colors shrink-0"
+                      title="Show subtitles 0.5 seconds earlier"
+                      aria-label="Subtitles 0.5 seconds earlier"
+                    >−0.5</button>
+                    <button
+                      onClick={() => setSubtitleOffset(0)}
+                      className="px-1.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-lg text-[10px] font-mono transition-colors shrink-0"
+                      title="Reset subtitle timing offset"
+                      aria-label="Reset subtitle timing offset"
+                    >{subtitleOffset === 0 ? 'SYNC' : (subtitleOffset > 0 ? '+' : '') + subtitleOffset.toFixed(1) + 's'}</button>
+                    <button
+                      onClick={() => setSubtitleOffset((prev) => Math.min(10, Math.round((prev + 0.5) * 10) / 10))}
+                      className="px-1.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-lg text-[10px] font-mono transition-colors shrink-0"
+                      title="Show subtitles 0.5 seconds later"
+                      aria-label="Subtitles 0.5 seconds later"
+                    >+0.5</button>
+                    <button
+                      onClick={() => setSubtitleSize((prev) => (prev === 'normal' ? 'large' : 'normal'))}
+                      className="px-2 py-1 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-gray-300 hover:text-white rounded-xl text-[10px] font-mono transition-colors shrink-0"
+                      title="Toggle Subtitle Size"
+                    >
+                      {subtitleSize === 'normal' ? '1x' : '1.5x'}
+                    </button>
+                  </>
                 )}
 
                 {/* Desktop Aspect Ratio Button */}
