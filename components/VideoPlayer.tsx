@@ -305,6 +305,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   const [activeCueText, setActiveCueText] = useState<string | null>(null);
   const isSeekingRef = useRef<boolean>(false);
   const seekTargetTimeRef = useRef<number>(initialTime);
+  // A seek with an indexed audio track restarts the FFmpeg stream at startTime;
+  // it may not produce a native "seeked" event on the existing video element.
+  const pendingStreamSeekRef = useRef<boolean>(false);
   const subtitleRequestIdRef = useRef<number>(0);
 
   const syncSubtitleCue = useCallback(
@@ -728,11 +731,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       }
 
       if (selectedAudioIndex !== 'default') {
+        // All discovered tracks use numeric IDs (for example "0"), so this path
+        // restarts the stream instead of changing the native media timeline.
+        pendingStreamSeekRef.current = true;
         const seekSec = Math.floor(clamped);
+        seekTargetTimeRef.current = seekSec;
         setResumeTime(seekSec);
         setCurrentTime(seekSec);
         setIsBuffering(true);
       } else {
+        pendingStreamSeekRef.current = false;
         setCurrentTime(clamped);
         if (videoRef.current) {
           videoRef.current.currentTime = clamped;
@@ -950,7 +958,18 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   const handlePlaying = () => {
     setIsBuffering(false);
     setIsPlaying(true);
-    syncSubtitleCue();
+
+    // A stream-reload seek may not emit "seeked"; release the temporary target-time
+    // override once the restarted stream has actually begun playing.
+    if (pendingStreamSeekRef.current) {
+      pendingStreamSeekRef.current = false;
+      isSeekingRef.current = false;
+      const absoluteTime = resumeTime + (videoRef.current?.currentTime || 0);
+      seekTargetTimeRef.current = absoluteTime;
+      syncSubtitleCue(absoluteTime);
+    } else {
+      syncSubtitleCue();
+    }
     resetControlsTimer(false);
     discordPresenceService.updatePlayback({
       fileName: video.name,
