@@ -108,73 +108,160 @@ const Icons = {
   ),
 };
 
-function convertSrtToVtt(srtText: string): string {
-  const normalized = srtText
-    .replace(/^\uFEFF/, '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
-    .trim();
+function normalizeSubtitleText(text: string): string {
+  return text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
 
+function convertSrtToVtt(srtText: string): string {
+  const normalized = normalizeSubtitleText(srtText)
+    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
   return 'WEBVTT\n\n' + normalized + '\n';
 }
 
-// Convert SubStation Alpha / Advanced SubStation Alpha subtitles to WebVTT.
-// Dialogue fields are split using the [Events] Format declaration so commas in
-// subtitle text are preserved. ASS positioning and styling are simplified.
+// ASS/SSA -> WebVTT. Dialogue text is preserved, while advanced positioning,
+// karaoke and style overrides are simplified because WebVTT cannot represent them all.
 function convertAssToVtt(assText: string): string {
-  const lines = assText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const lines = normalizeSubtitleText(assText).split('\n');
   let eventFields: string[] = [];
   const cues: string[] = [];
-
-  const toVttTime = (value: string): string | null => {
-    const match = value.trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[.](\d{1,2})$/);
-    if (!match) return null;
-    const centiseconds = match[4].padEnd(2, '0').slice(0, 2);
-    return match[1].padStart(2, '0') + ':' + match[2] + ':' + match[3] + '.' + centiseconds + '0';
+  const toTime = (value: string): string | null => {
+    const m = value.trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[.](\d{1,2})$/);
+    if (!m) return null;
+    return m[1].padStart(2, '0') + ':' + m[2] + ':' + m[3] + '.' + m[4].padEnd(2, '0').slice(0, 2) + '0';
   };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (/^\[Events\]/i.test(line)) {
-      eventFields = [];
-      continue;
-    }
-    if (/^\[/.test(line)) {
-      eventFields = [];
-      continue;
-    }
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (/^\[Events\]/i.test(line)) { eventFields = []; continue; }
+    if (/^\[/.test(line)) { eventFields = []; continue; }
     if (/^Format\s*:/i.test(line) && eventFields.length === 0) {
-      eventFields = line.slice(line.indexOf(':') + 1).split(',').map((field) => field.trim().toLowerCase());
+      eventFields = line.slice(line.indexOf(':') + 1).split(',').map((x) => x.trim().toLowerCase());
       continue;
     }
     if (!/^Dialogue\s*:/i.test(line) || eventFields.length === 0) continue;
-
     const values = line.slice(line.indexOf(':') + 1).trim().split(',');
     if (values.length < eventFields.length) continue;
     const fields: Record<string, string> = {};
-    eventFields.forEach((field, index) => {
-      fields[field] = index === eventFields.length - 1
-        ? values.slice(index).join(',')
-        : values[index] ?? '';
-    });
-
-    const start = toVttTime(fields.start || '');
-    const end = toVttTime(fields.end || '');
-    const text = (fields.text || '')
-      .replace(/\{[^}]*\}/g, '')
-      .replace(/\\[Nn]/g, '\n')
-      .replace(/\\h/g, ' ')
-      .replace(/<[^>]*>/g, '')
-      .split('\n')
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .join('\n');
-
+    eventFields.forEach((field, i) => { fields[field] = i === eventFields.length - 1 ? values.slice(i).join(',') : values[i] ?? ''; });
+    const start = toTime(fields.start || '');
+    const end = toTime(fields.end || '');
+    const text = (fields.text || '').replace(/\{[^}]*\}/g, '').replace(/\\[Nn]/g, '\n').replace(/\\h/g, ' ').replace(/<[^>]*>/g, '').trim();
     if (start && end && text) cues.push(start + ' --> ' + end + '\n' + text);
   }
-
   return 'WEBVTT\n\n' + cues.join('\n\n') + (cues.length ? '\n\n' : '');
+}
+
+// YouTube SBV format: 0:00:01.000,0:00:04.000 followed by text.
+function convertSbvToVtt(input: string): string {
+  const lines = normalizeSubtitleText(input).split('\n');
+  const cues: string[] = [];
+  for (let i = 0; i < lines.length;) {
+    const m = lines[i].trim().match(/^(\d{1,2}:\d{2}:\d{2}\.\d{3}),(\d{1,2}:\d{2}:\d{2}\.\d{3})$/);
+    if (!m) { i++; continue; }
+    const text: string[] = [];
+    i++;
+    while (i < lines.length && lines[i].trim() !== '' && !/^\d{1,2}:\d{2}:\d{2}\.\d{3},\d{1,2}:\d{2}:\d{2}\.\d{3}$/.test(lines[i].trim())) text.push(lines[i++]);
+    if (text.length) cues.push(m[1] + ' --> ' + m[2] + '\n' + text.join('\n'));
+  }
+  return 'WEBVTT\n\n' + cues.join('\n\n') + (cues.length ? '\n\n' : '');
+}
+
+// MicroDVD .sub uses frame numbers. Most files use 25 fps; this is a best-effort default.
+function convertMicroDvdToVtt(input: string): string {
+  const cues: string[] = [];
+  const time = (frame: number) => {
+    const ms = Math.max(0, Math.round(frame / 25 * 1000));
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + String(ms % 1000).padStart(3, '0');
+  };
+  for (const line of normalizeSubtitleText(input).split('\n')) {
+    const m = line.match(/^\{(\d+)\}\{(\d+)\}(.*)$/);
+    if (!m) continue;
+    const start = Number(m[1]), end = Number(m[2]);
+    if (end <= start) continue;
+    const text = m[3].replace(/\|/g, '\n').replace(/\{[^}]*\}/g, '').trim();
+    if (text) cues.push(time(start) + ' --> ' + time(end) + '\n' + text);
+  }
+  return 'WEBVTT\n\n' + cues.join('\n\n') + (cues.length ? '\n\n' : '');
+}
+
+// LRC lyrics are shown as timed text lines; each line ends when the next line begins.
+function convertLrcToVtt(input: string): string {
+  const entries: { time: number; text: string }[] = [];
+  for (const line of normalizeSubtitleText(input).split('\n')) {
+    const tags = [...line.matchAll(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g)];
+    const text = line.replace(/\[[^\]]+\]/g, '').trim();
+    if (!text) continue;
+    for (const tag of tags) {
+      const fraction = tag[3] || '0';
+      const millis = fraction.length === 3 ? Number(fraction) : fraction.length === 2 ? Number(fraction) * 10 : Number(fraction) * 100;
+      entries.push({ time: Number(tag[1]) * 60 + Number(tag[2]) + millis / 1000, text });
+    }
+  }
+  entries.sort((a, b) => a.time - b.time);
+  const fmt = (seconds: number) => {
+    const ms = Math.max(0, Math.round(seconds * 1000));
+    return String(Math.floor(ms / 3600000)).padStart(2, '0') + ':' + String(Math.floor(ms / 60000) % 60).padStart(2, '0') + ':' + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + '.' + String(ms % 1000).padStart(3, '0');
+  };
+  const cues = entries.map((entry, i) => {
+    const end = entries[i + 1]?.time ?? entry.time + 5;
+    return end > entry.time ? fmt(entry.time) + ' --> ' + fmt(end) + '\n' + entry.text : '';
+  }).filter(Boolean);
+  return 'WEBVTT\n\n' + cues.join('\n\n') + (cues.length ? '\n\n' : '');
+}
+
+// TTML/DFXP XML subtitles. Converts timed <p> elements; unsupported styling is dropped.
+function convertTtmlToVtt(input: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(normalizeSubtitleText(input), 'application/xml');
+    if (doc.querySelector('parsererror')) return 'WEBVTT\n\n';
+    const toSeconds = (value: string | null) => {
+      if (!value) return null;
+      const v = value.trim();
+      const clock = v.match(/^(\d{1,2}:)?(\d{2}):(\d{2})(?:[.,](\d+))?$/);
+      if (clock) {
+        const parts = v.split(':');
+        const sec = Number(parts.pop());
+        const min = Number(parts.pop());
+        const hour = parts.length ? Number(parts.pop()) : 0;
+        const frac = v.match(/[.,](\d+)$/)?.[1] || '';
+        return hour * 3600 + min * 60 + sec + (frac ? Number('0.' + frac) : 0);
+      }
+      const offset = v.match(/^(\d+(?:\.\d+)?)(h|m|s|ms)$/);
+      if (offset) return Number(offset[1]) * ({ h: 3600, m: 60, s: 1, ms: 0.001 } as Record<string, number>)[offset[2]];
+      return null;
+    };
+    const fmt = (seconds: number) => {
+      const ms = Math.max(0, Math.round(seconds * 1000));
+      return String(Math.floor(ms / 3600000)).padStart(2, '0') + ':' + String(Math.floor(ms / 60000) % 60).padStart(2, '0') + ':' + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + '.' + String(ms % 1000).padStart(3, '0');
+    };
+    const cues: string[] = [];
+    for (const p of Array.from(doc.getElementsByTagNameNS('*', 'p'))) {
+      const start = toSeconds(p.getAttribute('begin'));
+      const explicitEnd = toSeconds(p.getAttribute('end'));
+      const duration = toSeconds(p.getAttribute('dur'));
+      const end = explicitEnd ?? (start !== null && duration !== null ? start + duration : null);
+      const text = (p.textContent || '').replace(/\s+/g, ' ').trim();
+      if (start !== null && end !== null && end > start && text) cues.push(fmt(start) + ' --> ' + fmt(end) + '\n' + text);
+    }
+    return 'WEBVTT\n\n' + cues.join('\n\n') + (cues.length ? '\n\n' : '');
+  } catch {
+    return 'WEBVTT\n\n';
+  }
+}
+
+function convertSubtitleToVtt(fileName: string, input: string): string {
+  const extension = fileName.split('.').pop()?.toLowerCase() || '';
+  const content = normalizeSubtitleText(input);
+  if (extension === 'srt') return convertSrtToVtt(content);
+  if (extension === 'ass' || extension === 'ssa') return convertAssToVtt(content);
+  if (extension === 'sbv') return convertSbvToVtt(content);
+  if (extension === 'sub') return content.startsWith('WEBVTT') ? content : convertMicroDvdToVtt(content);
+  if (extension === 'lrc') return convertLrcToVtt(content);
+  if (['ttml', 'dfxp', 'xml'].includes(extension)) return convertTtmlToVtt(content);
+  if (extension === 'vtt') return content;
+  return 'WEBVTT\n\n';
 }
 
 function parseVttTimestamp(str: string): number {
@@ -988,31 +1075,21 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       const content = event.target?.result as string;
       if (!content) return;
 
-      const extension = file.name.split('.').pop()?.toLowerCase();
-      let vttContent: string;
-      if (extension === 'srt') {
-        vttContent = convertSrtToVtt(content);
-      } else if (extension === 'ass' || extension === 'ssa') {
-        vttContent = convertAssToVtt(content);
-      } else if (extension === 'vtt') {
-        vttContent = content.replace(/^\uFEFF/, '');
-        if (!/^WEBVTT(?:\s|$)/.test(vttContent.trimStart())) {
-          window.alert('This VTT file is missing the WEBVTT header.');
-          return;
-        }
-      } else {
-        window.alert('Unsupported subtitle format. Please use .srt, .vtt, .ass, or .ssa.');
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+      const supported = ['srt', 'vtt', 'ass', 'ssa', 'sbv', 'sub', 'lrc', 'ttml', 'dfxp', 'xml'];
+      if (!supported.includes(extension)) {
+        window.alert('This subtitle format is not supported yet. Supported text formats: SRT, VTT, ASS, SSA, SBV, MicroDVD SUB, LRC, TTML, DFXP, and XML-based timed text.');
         return;
       }
 
-      if (!vttContent.includes('-->')) {
-        window.alert('No valid subtitle cues were found in this file.');
+      const vttContent = convertSubtitleToVtt(file.name, content);
+      if (!/^WEBVTT(?:\s|$)/.test(vttContent.trimStart()) || !vttContent.includes('-->')) {
+        window.alert('Could not find valid timed subtitle cues in this file. Bitmap subtitles such as IDX/SUB, SUP, and PGS need OCR conversion first.');
         return;
       }
 
       const blob = new Blob([vttContent], { type: 'text/vtt' });
       const blobUrl = URL.createObjectURL(blob);
-
       const newTrack: SubtitleTrackInfo = {
         id: Date.now(),
         streamIndex: -1,
@@ -1020,13 +1097,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         language: 'custom',
         label: 'File: ' + file.name,
         isCustom: true,
-        blobUrl: blobUrl,
+        blobUrl,
       };
-
       setSubtitleTracks((prev) => [...prev, newTrack]);
       setSelectedSubtitleId(newTrack.id.toString());
     };
 
+    reader.onerror = () => window.alert('Could not read this subtitle file.');
     reader.readAsText(file);
     e.target.value = '';
   };
@@ -1742,13 +1819,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".srt,.vtt,.ass,.ssa"
+                    accept=".srt,.vtt,.ass,.ssa,.sbv,.sub,.lrc,.ttml,.dfxp,.xml"
                     onChange={handleLocalSubtitleUpload}
                     className="hidden"
                   />
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    title="Upload local subtitle (.srt, .vtt, .ass, .ssa)"
+                    title="Upload subtitle (SRT, VTT, ASS/SSA, SBV, SUB, LRC, TTML/DFXP)"
                     className="text-[10px] text-gray-400 hover:text-white px-1 font-mono hover:bg-white/[0.08] rounded transition-colors shrink-0"
                   >
                     +SUB
