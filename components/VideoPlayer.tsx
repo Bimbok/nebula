@@ -429,9 +429,9 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     };
   }, [video.id, token]);
 
-  // 2. Load a complete subtitle document before publishing cues.
-  // FFmpeg's WebVTT output is streamed in chunks; parsing partial documents can publish
-  // truncated cues and produces inconsistent subtitle playback on slower connections.
+  // 2. Load subtitle cues progressively, but only publish complete WebVTT cue blocks.
+  // FFmpeg sends WebVTT in chunks. Parsing an unfinished final line can briefly create
+  // broken cues, while waiting for the whole document can delay subtitles for large files.
   useEffect(() => {
     subtitleAbortRef.current?.abort();
     const requestId = ++subtitleRequestIdRef.current;
@@ -458,33 +458,71 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       return () => controller.abort();
     }
 
+    const publishCompleteCues = (vttText: string, isFinal = false, previousText = '') => {
+      const normalized = vttText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const boundary = normalized.lastIndexOf('\n\n');
+      const completeLength = isFinal ? normalized.length : boundary >= 0 ? boundary + 2 : 0;
+      const completeText = normalized.slice(0, completeLength);
+
+      if (completeText === previousText || (!isFinal && completeLength === 0)) {
+        return { publishedText: previousText, cueCount: -1 };
+      }
+
+      const cues = parseWebVttCues(completeText);
+      if (cues.length > 0) setSubtitleCues(cues);
+      return { publishedText: completeText, cueCount: cues.length };
+    };
+
     const loadSubtitles = async () => {
       setIsSubtitleLoading(true);
       setSubtitleCues([]);
       setActiveCueText(null);
 
       try {
-        let vttText: string;
+        const isCustom = matched.isCustom && !!matched.blobUrl;
+        const subUrl = `/api/subtitles?fileId=${video.id}&streamIndex=${matched.streamIndex}&token=${encodeURIComponent(token)}${matched.isBitmap ? '&isBitmap=true' : ''}`;
+        const res = await fetch(isCustom ? matched.blobUrl! : subUrl, { signal: controller.signal });
+        if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
 
-        if (matched.isCustom && matched.blobUrl) {
-          const res = await fetch(matched.blobUrl, { signal: controller.signal });
-          if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
-          vttText = await res.text();
-        } else {
-          const isBitmapParam = matched.isBitmap ? '&isBitmap=true' : '';
-          const subUrl = `/api/subtitles?fileId=${video.id}&streamIndex=${matched.streamIndex}&token=${encodeURIComponent(token)}${isBitmapParam}`;
-          const res = await fetch(subUrl, { signal: controller.signal });
-          if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
-          // Read through EOF so only a complete response can reach the parser.
-          vttText = await res.text();
+        if (isCustom || !res.body) {
+          const vttText = await res.text();
+          if (!isCurrentRequest()) return;
+          const cues = parseWebVttCues(vttText);
+          if (cues.length === 0 && !matched.isBitmap) {
+            throw new Error('Subtitle response contained no valid WebVTT cues');
+          }
+          setSubtitleCues(cues);
+          return;
         }
 
-        if (!isCurrentRequest()) return;
-        const cues = parseWebVttCues(vttText);
-        if (cues.length === 0 && !matched.isBitmap) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let receivedText = '';
+        let publishedText = '';
+        let finalCueCount = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (value) receivedText += decoder.decode(value, { stream: !done });
+          if (done) receivedText += decoder.decode();
+
+          if (!isCurrentRequest()) {
+            await reader.cancel().catch(() => {});
+            return;
+          }
+
+          const result = publishCompleteCues(receivedText, done, publishedText);
+          if (result.cueCount >= 0) {
+            publishedText = result.publishedText;
+            finalCueCount = result.cueCount;
+          }
+
+          if (done) break;
+        }
+
+        if (finalCueCount === 0 && !matched.isBitmap) {
           throw new Error('Subtitle response contained no valid WebVTT cues');
         }
-        setSubtitleCues(cues);
       } catch (err: any) {
         if (err?.name !== 'AbortError' && isCurrentRequest()) {
           console.error('[Subtitle load error]', err);
