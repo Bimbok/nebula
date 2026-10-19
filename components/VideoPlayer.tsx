@@ -569,6 +569,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     }
 
     const onSeeking = () => {
+      // Ignore native timeline events caused by replacing the source after a stream seek.
+      // The target timestamp is the authoritative time until the replacement starts.
+      if (pendingStreamSeekRef.current) {
+        syncSubtitleCue(seekTargetTimeRef.current);
+        return;
+      }
+
       isSeekingRef.current = true;
       const absoluteTime = resumeTime + player.currentTime;
       seekTargetTimeRef.current = absoluteTime;
@@ -576,6 +583,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     };
 
     const onSeeked = () => {
+      if (pendingStreamSeekRef.current) {
+        syncSubtitleCue(seekTargetTimeRef.current);
+        return;
+      }
+
       const absoluteTime = resumeTime + player.currentTime;
       seekTargetTimeRef.current = absoluteTime;
       isSeekingRef.current = false;
