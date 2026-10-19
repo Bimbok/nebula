@@ -332,8 +332,20 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     syncSubtitleCue();
   }, [subtitleCues, syncSubtitleCue]);
 
-  // Token
-  const token = window.gapi?.client?.getToken?.()?.access_token || '';
+  // Token with fallback to localStorage and cookie
+  const token =
+    window.gapi?.client?.getToken?.()?.access_token ||
+    (() => {
+      try {
+        const stored = localStorage.getItem('gdrive_oauth_token');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.access_token) return parsed.access_token;
+        }
+      } catch {}
+      const match = document.cookie.match(/gdrive_token=([^;]+)/);
+      return match ? decodeURIComponent(match[1]) : '';
+    })();
 
   // Calculate True Total Duration
   const knownTotalDuration =
@@ -414,7 +426,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     };
   }, [video.id, token]);
 
-  // 2. Fetch and parse complete WebVTT cues
+  // 2. Fetch and parse WebVTT cues progressively
   useEffect(() => {
     subtitleAbortRef.current?.abort();
 
@@ -450,10 +462,37 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         const res = await fetch(subUrl, { signal: controller.signal });
         if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
 
-        const vttText = await res.text();
-        if (isCurrentRequest()) {
-          const cues = parseWebVttCues(vttText);
-          setSubtitleCues(cues);
+        if (!res.body) {
+          const vttText = await res.text();
+          if (isCurrentRequest() && vttText) {
+            setSubtitleCues(parseWebVttCues(vttText));
+          }
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let receivedText = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (!isCurrentRequest()) break;
+
+          if (value) {
+            receivedText += decoder.decode(value, { stream: !done });
+            const cues = parseWebVttCues(receivedText);
+            if (cues.length > 0) {
+              setSubtitleCues(cues);
+            }
+          }
+
+          if (done) {
+            receivedText += decoder.decode();
+            if (receivedText) {
+              setSubtitleCues(parseWebVttCues(receivedText));
+            }
+            break;
+          }
         }
       } catch (err: any) {
         if (err.name !== 'AbortError') {

@@ -61,123 +61,10 @@ function parseDuration(val: any): number {
   return isNaN(n) ? 0 : n;
 }
 
-// Active in-flight subtitle extractions map to deduplicate concurrent requests
-const activeSubtitleExtractions = new Map<string, Promise<Buffer | null>>();
-
 function isValidWebVtt(contents: Buffer): boolean {
   if (!contents || contents.length < 16) return false;
   const str = contents.toString('utf8', 0, Math.min(contents.length, 512));
   return str.startsWith('WEBVTT') && contents.includes(Buffer.from('-->'));
-}
-
-async function getOrExtractSubtitle(
-  fileId: string,
-  streamIndex: string,
-  token: string
-): Promise<Buffer | null> {
-  const cacheDir = path.resolve('.cache', 'subtitles');
-  if (!fs.existsSync(cacheDir)) {
-    try {
-      fs.mkdirSync(cacheDir, { recursive: true });
-    } catch {}
-  }
-
-  const cacheFile = path.join(cacheDir, `${fileId}_${streamIndex}.vtt`);
-
-  // 1. Return from disk if a valid complete WebVTT file is cached
-  if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 30) {
-    try {
-      const existing = fs.readFileSync(cacheFile);
-      if (isValidWebVtt(existing)) {
-        return existing;
-      }
-      fs.unlinkSync(cacheFile);
-    } catch {}
-  }
-
-  // 2. Return in-flight extraction promise if already in progress
-  const cacheKey = `${fileId}_${streamIndex}`;
-  if (activeSubtitleExtractions.has(cacheKey)) {
-    return activeSubtitleExtractions.get(cacheKey)!;
-  }
-
-  // 3. Spawn FFmpeg with seekable HTTP range and no-video/no-audio flags
-  const extractionPromise = (async () => {
-    return new Promise<Buffer | null>((resolve) => {
-      const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-      const headersParam = `Authorization: Bearer ${token}\r\n`;
-
-      const ffmpegArgs = [
-        '-loglevel', 'error',
-        '-headers', headersParam,
-        '-seekable', '1',
-        '-multiple_requests', '1',
-        '-reconnect', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_on_network_error', '1',
-        '-reconnect_delay_max', '2',
-        '-i', driveUrl,
-        '-map', `0:${streamIndex}`,
-        '-vn',
-        '-an',
-        '-c:s', 'webvtt',
-        '-f', 'webvtt',
-        'pipe:1',
-      ];
-
-      const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-      const chunks: Buffer[] = [];
-      let resolved = false;
-
-      // 45-second safety watchdog
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          try { ffmpeg.kill('SIGKILL'); } catch {}
-          resolve(null);
-        }
-      }, 45000);
-
-      ffmpeg.stdout.on('data', (c) => chunks.push(c));
-      ffmpeg.stderr.on('data', (d) => {
-        console.warn('[ffmpeg-sub]', d.toString().trim());
-      });
-
-      ffmpeg.on('close', (code) => {
-        clearTimeout(timer);
-        if (resolved) return;
-        resolved = true;
-
-        const output = Buffer.concat(chunks);
-        if (code === 0 && isValidWebVtt(output)) {
-          const tempFile = `${cacheFile}.tmp.${Date.now()}`;
-          try {
-            fs.writeFileSync(tempFile, output);
-            fs.renameSync(tempFile, cacheFile);
-          } catch (e) {
-            console.warn('[subtitle cache write error]', e);
-          }
-          resolve(output);
-        } else {
-          console.warn(`[ffmpeg-sub] Subtitle extraction finished with code ${code}, output length: ${output.length}`);
-          resolve(null);
-        }
-      });
-
-      ffmpeg.on('error', (err) => {
-        clearTimeout(timer);
-        if (resolved) return;
-        resolved = true;
-        console.error('[ffmpeg subtitle extraction error]', err);
-        resolve(null);
-      });
-    });
-  })().finally(() => {
-    activeSubtitleExtractions.delete(cacheKey);
-  });
-
-  activeSubtitleExtractions.set(cacheKey, extractionPromise);
-  return extractionPromise;
 }
 
 function getAudioTrackCodec(fileId: string, audioIndex: number): string | null {
@@ -452,27 +339,111 @@ function streamProxyPlugin() {
           return;
         }
 
-        const subtitleBuffer = await getOrExtractSubtitle(fileId, streamIndex, token);
-        if (!subtitleBuffer) {
-          res.statusCode = 502;
-          res.setHeader('Content-Type', 'text/plain');
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          res.end('Subtitle extraction failed');
-          return;
+        const cacheDir = path.resolve('.cache', 'subtitles');
+        if (!fs.existsSync(cacheDir)) {
+          try {
+            fs.mkdirSync(cacheDir, { recursive: true });
+          } catch {}
         }
+        const cacheFile = path.join(cacheDir, `${fileId}_${streamIndex}.vtt`);
+
+        // Serve instantly from disk if previously cached
+        if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 30) {
+          try {
+            const cached = fs.readFileSync(cacheFile);
+            if (isValidWebVtt(cached)) {
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.setHeader('Cache-Control', 'public, max-age=86400');
+              res.setHeader('Content-Length', cached.length.toString());
+              res.end(cached);
+              return;
+            }
+            fs.unlinkSync(cacheFile);
+          } catch {}
+        }
+
+        const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+        const headersParam = `Authorization: Bearer ${token}\r\n`;
 
         res.statusCode = 200;
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'public, max-age=86400');
-        res.setHeader('Content-Length', subtitleBuffer.length.toString());
-        res.end(subtitleBuffer);
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Transfer-Encoding', 'chunked');
+
+        // Extract subtitles: -headers must be immediately before -i
+        const ffmpegArgs = [
+          '-loglevel', 'error',
+          '-reconnect', '1',
+          '-reconnect_streamed', '1',
+          '-reconnect_on_network_error', '1',
+          '-reconnect_delay_max', '2',
+          '-headers', headersParam,
+          '-i', driveUrl,
+          '-map', `0:${streamIndex}`,
+          '-vn',
+          '-an',
+          '-c:s', 'webvtt',
+          '-f', 'webvtt',
+          'pipe:1',
+        ];
+
+        const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+        const chunks: Buffer[] = [];
+
+        ffmpeg.stdout.on('data', (c) => {
+          chunks.push(c);
+          if (!res.writableEnded) {
+            res.write(c);
+            if (typeof (res as any).flush === 'function') {
+              (res as any).flush();
+            }
+          }
+        });
+
+        ffmpeg.stderr.on('data', (d) => {
+          console.warn('[ffmpeg-sub]', d.toString().trim());
+        });
+
+        ffmpeg.on('close', (code) => {
+          const fullData = Buffer.concat(chunks);
+          if (code === 0 && isValidWebVtt(fullData)) {
+            const tempFile = `${cacheFile}.tmp.${Date.now()}`;
+            try {
+              fs.writeFileSync(tempFile, fullData);
+              fs.renameSync(tempFile, cacheFile);
+            } catch (e) {
+              console.warn('[subtitle cache write error]', e);
+            }
+          }
+          if (!res.writableEnded) {
+            res.end();
+          }
+        });
+
+        ffmpeg.on('error', (err) => {
+          console.error('[ffmpeg subtitle extraction error]', err);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.end('WEBVTT\n\n');
+          } else if (!res.writableEnded) {
+            res.end();
+          }
+        });
+
+        const stopSubtitleExtraction = () => {
+          if (!res.writableEnded) {
+            try { ffmpeg.kill('SIGKILL'); } catch {}
+          }
+        };
+        req.on('aborted', stopSubtitleExtraction);
       } catch (err: any) {
         if (!res.headersSent) {
           res.statusCode = 500;
-          res.setHeader('Content-Type', 'text/plain');
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          res.end(`Internal subtitle error: ${err.message}`);
+          res.setHeader('Content-Type', 'text/vtt');
+          res.end('WEBVTT\n\n');
         } else if (!res.writableEnded) {
           res.end();
         }
