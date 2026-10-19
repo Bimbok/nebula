@@ -117,60 +117,96 @@ function convertSrtToVtt(srtText: string): string {
   return vtt;
 }
 
+function parseVttTimestamp(str: string): number {
+  if (!str) return 0;
+  const clean = str.trim().replace(',', '.');
+  const parts = clean.split(':');
+  if (parts.length === 3) {
+    return (parseFloat(parts[0]) || 0) * 3600 + (parseFloat(parts[1]) || 0) * 60 + (parseFloat(parts[2]) || 0);
+  }
+  if (parts.length === 2) {
+    return (parseFloat(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
+  }
+  return parseFloat(parts[0]) || 0;
+}
+
 function parseWebVttCues(vttText: string): SubtitleCue[] {
+  if (!vttText || typeof vttText !== 'string') return [];
   const cues: SubtitleCue[] = [];
   const lines = vttText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
 
-  const parseTime = (str: string): number => {
-    if (!str) return 0;
-    const parts = str.trim().split(':');
-    if (parts.length === 3) {
-      return (parseFloat(parts[0]) || 0) * 3600 + (parseFloat(parts[1]) || 0) * 60 + (parseFloat(parts[2]) || 0);
-    }
-    if (parts.length === 2) {
-      return (parseFloat(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
-    }
-    return parseFloat(parts[0]) || 0;
-  };
-
   let i = 0;
+  // Skip WEBVTT header and any leading metadata/style blocks
+  while (i < lines.length) {
+    if (lines[i].includes('-->')) break;
+    i++;
+  }
+
   while (i < lines.length) {
     const line = lines[i].trim();
     if (line.includes('-->')) {
-      const match = line.split('-->');
-      if (match.length >= 2) {
-        const start = parseTime(match[0].trim().split(/\s+/)[0]);
-        const end = parseTime(match[1].trim().split(/\s+/)[0]);
+      const arrowIdx = line.indexOf('-->');
+      const startStr = line.substring(0, arrowIdx).trim().split(/\s+/)[0];
+      const endPart = line.substring(arrowIdx + 3).trim();
+      const endStr = endPart.split(/\s+/)[0];
 
-        i++;
-        const textLines: string[] = [];
-        while (i < lines.length && lines[i].trim() !== '') {
-          const cleaned = lines[i]
-            .replace(/<[^>]+>/g, '')
-            .replace(/\{[^}]+\}/g, '')
-            .trim();
-          if (cleaned.length > 0) {
-            textLines.push(cleaned);
+      const start = parseVttTimestamp(startStr);
+      const end = parseVttTimestamp(endStr);
+
+      i++;
+      const textLines: string[] = [];
+      while (i < lines.length) {
+        const textLine = lines[i].trim();
+        if (textLine === '') {
+          break;
+        }
+        if (textLine.includes('-->')) {
+          if (textLines.length > 0 && /^\d+$/.test(textLines[textLines.length - 1])) {
+            textLines.pop();
           }
-          i++;
+          break;
         }
 
-        if (textLines.length > 0 && end > start) {
-          cues.push({
-            start,
-            end,
-            text: textLines.join('\n'),
-          });
+        // Strip HTML tags and ASS/SSA curly brace styling
+        const cleaned = textLine
+          .replace(/<[^>]+>/g, '')
+          .replace(/\{[^}]+\}/g, '')
+          .trim();
+
+        if (cleaned.length > 0) {
+          textLines.push(cleaned);
         }
-      } else {
         i++;
+      }
+
+      if (textLines.length > 0 && end > start) {
+        cues.push({
+          start,
+          end,
+          text: textLines.join('\n'),
+        });
       }
     } else {
       i++;
     }
   }
 
+  cues.sort((a, b) => a.start - b.start);
   return cues;
+}
+
+function findActiveCueText(cues: SubtitleCue[], time: number): string | null {
+  if (!cues || cues.length === 0 || time < 0) return null;
+  const active: string[] = [];
+  for (let i = 0; i < cues.length; i++) {
+    const cue = cues[i];
+    if (time >= cue.start && time <= cue.end) {
+      active.push(cue.text);
+    } else if (cue.start > time + 5) {
+      break;
+    }
+  }
+  return active.length > 0 ? active.join('\n') : null;
 }
 
 const aspectModes: { key: AspectRatioMode; label: string }[] = [
@@ -266,6 +302,35 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   // Subtitle cue parser cache & active cue
   const [subtitleCues, setSubtitleCues] = useState<SubtitleCue[]>([]);
   const [activeCueText, setActiveCueText] = useState<string | null>(null);
+  const isSeekingRef = useRef<boolean>(false);
+  const seekTargetTimeRef = useRef<number>(initialTime);
+
+  const syncSubtitleCue = useCallback(
+    (overrideTime?: number) => {
+      if (selectedSubtitleId === 'off' || subtitleCues.length === 0) {
+        setActiveCueText(null);
+        return;
+      }
+
+      let time: number;
+      if (typeof overrideTime === 'number' && !isNaN(overrideTime)) {
+        time = overrideTime;
+      } else if (isSeekingRef.current) {
+        time = seekTargetTimeRef.current;
+      } else {
+        const v = videoRef.current;
+        time = resumeTime + (v ? v.currentTime : 0);
+      }
+
+      const text = findActiveCueText(subtitleCues, time);
+      setActiveCueText((prev) => (prev === text ? prev : text));
+    },
+    [selectedSubtitleId, subtitleCues, resumeTime]
+  );
+
+  useEffect(() => {
+    syncSubtitleCue();
+  }, [subtitleCues, syncSubtitleCue]);
 
   // Token
   const token = window.gapi?.client?.getToken?.()?.access_token || '';
@@ -349,7 +414,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     };
   }, [video.id, token]);
 
-  // 2. Fetch and parse WebVTT cues incrementally
+  // 2. Fetch and parse complete WebVTT cues
   useEffect(() => {
     subtitleAbortRef.current?.abort();
 
@@ -364,21 +429,18 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     subtitleAbortRef.current = controller;
     const isCurrentRequest = () => subtitleAbortRef.current === controller && !controller.signal.aborted;
 
-    // Never leave the preceding track on-screen while this track is loading.
-    setSubtitleCues([]);
-    setActiveCueText(null);
+    const matched = subtitleTracks.find((s) => s.id.toString() === selectedSubtitleId);
+    if (!matched) return;
 
     const loadSubtitles = async () => {
       setIsSubtitleLoading(true);
       try {
-        const matched = subtitleTracks.find((s) => s.id.toString() === selectedSubtitleId);
-        if (!matched) return;
-
         if (matched.isCustom && matched.blobUrl) {
           const res = await fetch(matched.blobUrl, { signal: controller.signal });
           const vttText = await res.text();
           if (isCurrentRequest() && vttText) {
-            setSubtitleCues(parseWebVttCues(vttText));
+            const cues = parseWebVttCues(vttText);
+            setSubtitleCues(cues);
           }
           return;
         }
@@ -386,43 +448,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         const isBitmapParam = matched.isBitmap ? '&isBitmap=true' : '';
         const subUrl = `/api/subtitles?fileId=${video.id}&streamIndex=${matched.streamIndex}&token=${encodeURIComponent(token)}${isBitmapParam}`;
         const res = await fetch(subUrl, { signal: controller.signal });
-        if (!res.ok) throw new Error('Subtitle fetch failed');
+        if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
 
-        if (!res.body) {
-          const vttText = await res.text();
-          if (isCurrentRequest() && vttText) {
-            setSubtitleCues(parseWebVttCues(vttText));
-          }
-          return;
+        const vttText = await res.text();
+        if (isCurrentRequest()) {
+          const cues = parseWebVttCues(vttText);
+          setSubtitleCues(cues);
         }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let receivedText = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (!isCurrentRequest()) break;
-
-          if (value) {
-            receivedText += decoder.decode(value, { stream: !done });
-            const cues = parseWebVttCues(receivedText);
-            if (cues.length > 0) {
-              setSubtitleCues(cues);
-            }
-          }
-
-          if (done) {
-            receivedText += decoder.decode();
-            if (receivedText) {
-              setSubtitleCues(parseWebVttCues(receivedText));
-            }
-            break;
-          }
-        }
-      } catch (err) {
-        if ((err as DOMException).name !== 'AbortError') {
-          console.error('Failed to load subtitles:', err);
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.error('[Subtitle load error]', err);
         }
       } finally {
         if (isCurrentRequest()) {
@@ -438,9 +473,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     };
   }, [selectedSubtitleId, subtitleTracks, video.id, token]);
 
-  // Keep captions tied to the timestamp of the frame actually being presented.
-  // `timeupdate` is deliberately throttled by browsers (often to 4Hz), which
-  // made captions visibly late and especially noticeable after a seek.
+  // 3. Subtitle presentation engine - hardware video frame presentation + event listeners + heartbeat
   useEffect(() => {
     if (subtitleCues.length === 0 || selectedSubtitleId === 'off') {
       setActiveCueText(null);
@@ -450,17 +483,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     const player = videoRef.current;
     if (!player) return;
 
-    const updateCue = (time: number) => {
-      const text = subtitleCues
-        .filter((cue) => time >= cue.start && time < cue.end)
-        .map((cue) => cue.text)
-        .join('\n') || null;
-      setActiveCueText((previous) => (previous === text ? previous : text));
-    };
-
-    const onSeeked = () => updateCue(player.currentTime + resumeTime);
-    onSeeked();
-    player.addEventListener('seeked', onSeeked);
+    syncSubtitleCue();
 
     type FrameCallbackVideo = HTMLVideoElement & {
       requestVideoFrameCallback?: (callback: (_now: number, metadata: { mediaTime: number }) => void) => number;
@@ -468,26 +491,39 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     };
     const framePlayer = player as FrameCallbackVideo;
     let frameHandle: number | undefined;
-    let fallbackTimer: number | undefined;
+
     const onFrame = (_now: number, metadata: { mediaTime: number }) => {
-      updateCue(metadata.mediaTime + resumeTime);
+      if (!isSeekingRef.current) {
+        syncSubtitleCue(resumeTime + metadata.mediaTime);
+      }
       frameHandle = framePlayer.requestVideoFrameCallback?.(onFrame);
     };
 
     if (framePlayer.requestVideoFrameCallback) {
       frameHandle = framePlayer.requestVideoFrameCallback(onFrame);
-    } else {
-      // Older browsers do not expose frame callbacks; retain a tighter fallback
-      // than `timeupdate` without changing the video's playback clock.
-      fallbackTimer = window.setInterval(() => onSeeked(), 50);
     }
 
-    return () => {
-      player.removeEventListener('seeked', onSeeked);
-      if (frameHandle !== undefined) framePlayer.cancelVideoFrameCallback?.(frameHandle);
-      if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
+    const onSyncEvent = () => {
+      syncSubtitleCue();
     };
-  }, [subtitleCues, selectedSubtitleId, resumeTime]);
+
+    // Heartbeat ticker to guarantee synchronization even when paused or stepping
+    const ticker = window.setInterval(() => {
+      syncSubtitleCue();
+    }, 100);
+
+    player.addEventListener('seeked', onSyncEvent);
+    player.addEventListener('loadeddata', onSyncEvent);
+    player.addEventListener('canplay', onSyncEvent);
+
+    return () => {
+      if (frameHandle !== undefined) framePlayer.cancelVideoFrameCallback?.(frameHandle);
+      window.clearInterval(ticker);
+      player.removeEventListener('seeked', onSyncEvent);
+      player.removeEventListener('loadeddata', onSyncEvent);
+      player.removeEventListener('canplay', onSyncEvent);
+    };
+  }, [subtitleCues, selectedSubtitleId, resumeTime, syncSubtitleCue]);
 
   // Fullscreen listener
   useEffect(() => {
@@ -642,6 +678,15 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       const clamped = Math.max(0, Math.min(knownTotalDuration > 0 ? knownTotalDuration : Infinity, targetSeconds));
       persistCurrentProgress(clamped);
 
+      isSeekingRef.current = true;
+      seekTargetTimeRef.current = clamped;
+
+      // Update subtitle cue immediately to target position for instantaneous response
+      if (subtitleCues.length > 0 && selectedSubtitleId !== 'off') {
+        const immediateText = findActiveCueText(subtitleCues, clamped);
+        setActiveCueText(immediateText);
+      }
+
       if (selectedAudioIndex !== 'default') {
         const seekSec = Math.floor(clamped);
         setResumeTime(seekSec);
@@ -661,7 +706,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         isPlaying: isPlaying,
       });
     },
-    [knownTotalDuration, selectedAudioIndex, persistCurrentProgress, video.name, isPlaying]
+    [knownTotalDuration, selectedAudioIndex, persistCurrentProgress, video.name, isPlaying, subtitleCues, selectedSubtitleId]
   );
 
   // Scrubber Hover Tooltip logic
@@ -854,6 +899,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
 
   const handleCanPlay = () => {
     setIsBuffering(false);
+    isSeekingRef.current = false;
+    syncSubtitleCue();
   };
 
   const handleWaiting = () => {
@@ -863,6 +910,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   const handlePlaying = () => {
     setIsBuffering(false);
     setIsPlaying(true);
+    isSeekingRef.current = false;
+    syncSubtitleCue();
     resetControlsTimer(false);
     discordPresenceService.updatePlayback({
       fileName: video.name,
@@ -887,9 +936,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
 
   const handleTimeUpdate = () => {
     if (videoRef.current) {
+      if (isSeekingRef.current && videoRef.current.currentTime > 0) {
+        isSeekingRef.current = false;
+      }
       const absTime = resumeTime + videoRef.current.currentTime;
       setCurrentTime(absTime);
       updateBuffered();
+      syncSubtitleCue(absTime);
 
       // Throttle saving progress to localStorage every 4 seconds
       if (Math.abs(absTime - lastSavedTimeRef.current) >= 4) {
