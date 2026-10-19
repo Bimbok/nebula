@@ -975,8 +975,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
 
   const handleTimeUpdate = () => {
     if (videoRef.current) {
-      // timeupdate is not proof that a seek has completed; let the seeked event
-      // release isSeekingRef to avoid syncing against an intermediate timestamp.
       const absTime = resumeTime + videoRef.current.currentTime;
       setCurrentTime(absTime);
       updateBuffered();
