@@ -299,11 +299,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     return () => clearTimeout(t);
   }, [showResumeToast]);
 
-  // Subtitle cue parser cache & active cue
+  // Subtitle cue parser cache & active cue.
+  // Always calculate against the absolute movie timestamp (stream resume offset + element time).
   const [subtitleCues, setSubtitleCues] = useState<SubtitleCue[]>([]);
   const [activeCueText, setActiveCueText] = useState<string | null>(null);
   const isSeekingRef = useRef<boolean>(false);
   const seekTargetTimeRef = useRef<number>(initialTime);
+  const subtitleRequestIdRef = useRef<number>(0);
 
   const syncSubtitleCue = useCallback(
     (overrideTime?: number) => {
@@ -312,15 +314,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         return;
       }
 
-      let time: number;
-      if (typeof overrideTime === 'number' && !isNaN(overrideTime)) {
-        time = overrideTime;
-      } else if (isSeekingRef.current) {
-        time = seekTargetTimeRef.current;
-      } else {
-        const v = videoRef.current;
-        time = resumeTime + (v ? v.currentTime : 0);
-      }
+      const player = videoRef.current;
+      const time =
+        typeof overrideTime === 'number' && Number.isFinite(overrideTime)
+          ? overrideTime
+          : isSeekingRef.current
+          ? seekTargetTimeRef.current
+          : resumeTime + (player?.currentTime ?? 0);
 
       const text = findActiveCueText(subtitleCues, time);
       setActiveCueText((prev) => (prev === text ? prev : text));
@@ -426,9 +426,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     };
   }, [video.id, token]);
 
-  // 2. Fetch and parse WebVTT cues progressively
+  // 2. Load a complete subtitle document before publishing cues.
+  // FFmpeg's WebVTT output is streamed in chunks; parsing partial documents can publish
+  // truncated cues and produces inconsistent subtitle playback on slower connections.
   useEffect(() => {
     subtitleAbortRef.current?.abort();
+    const requestId = ++subtitleRequestIdRef.current;
 
     if (selectedSubtitleId === 'off') {
       setSubtitleCues([]);
@@ -439,77 +442,59 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
 
     const controller = new AbortController();
     subtitleAbortRef.current = controller;
-    const isCurrentRequest = () => subtitleAbortRef.current === controller && !controller.signal.aborted;
+    const isCurrentRequest = () =>
+      subtitleRequestIdRef.current === requestId &&
+      subtitleAbortRef.current === controller &&
+      !controller.signal.aborted;
 
     const matched = subtitleTracks.find((s) => s.id.toString() === selectedSubtitleId);
-    if (!matched) return;
+    if (!matched) {
+      setSubtitleCues([]);
+      setActiveCueText(null);
+      setIsSubtitleLoading(false);
+      return () => controller.abort();
+    }
 
     const loadSubtitles = async () => {
       setIsSubtitleLoading(true);
+      setSubtitleCues([]);
+      setActiveCueText(null);
+
       try {
+        let vttText: string;
+
         if (matched.isCustom && matched.blobUrl) {
           const res = await fetch(matched.blobUrl, { signal: controller.signal });
-          const vttText = await res.text();
-          if (isCurrentRequest() && vttText) {
-            const cues = parseWebVttCues(vttText);
-            setSubtitleCues(cues);
-          }
-          return;
+          if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
+          vttText = await res.text();
+        } else {
+          const isBitmapParam = matched.isBitmap ? '&isBitmap=true' : '';
+          const subUrl = `/api/subtitles?fileId=${video.id}&streamIndex=${matched.streamIndex}&token=${encodeURIComponent(token)}${isBitmapParam}`;
+          const res = await fetch(subUrl, { signal: controller.signal });
+          if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
+          // Read through EOF so only a complete response can reach the parser.
+          vttText = await res.text();
         }
 
-        const isBitmapParam = matched.isBitmap ? '&isBitmap=true' : '';
-        const subUrl = `/api/subtitles?fileId=${video.id}&streamIndex=${matched.streamIndex}&token=${encodeURIComponent(token)}${isBitmapParam}`;
-        const res = await fetch(subUrl, { signal: controller.signal });
-        if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
-
-        if (!res.body) {
-          const vttText = await res.text();
-          if (isCurrentRequest() && vttText) {
-            setSubtitleCues(parseWebVttCues(vttText));
-          }
-          return;
+        if (!isCurrentRequest()) return;
+        const cues = parseWebVttCues(vttText);
+        if (cues.length === 0 && !matched.isBitmap) {
+          throw new Error('Subtitle response contained no valid WebVTT cues');
         }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let receivedText = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (!isCurrentRequest()) break;
-
-          if (value) {
-            receivedText += decoder.decode(value, { stream: !done });
-            const cues = parseWebVttCues(receivedText);
-            if (cues.length > 0) {
-              setSubtitleCues(cues);
-            }
-          }
-
-          if (done) {
-            receivedText += decoder.decode();
-            if (receivedText) {
-              setSubtitleCues(parseWebVttCues(receivedText));
-            }
-            break;
-          }
-        }
+        setSubtitleCues(cues);
       } catch (err: any) {
-        if (err.name !== 'AbortError') {
+        if (err?.name !== 'AbortError' && isCurrentRequest()) {
           console.error('[Subtitle load error]', err);
+          setSubtitleCues([]);
+          setActiveCueText(null);
         }
       } finally {
-        if (isCurrentRequest()) {
-          setIsSubtitleLoading(false);
-        }
+        if (isCurrentRequest()) setIsSubtitleLoading(false);
       }
     };
 
-    loadSubtitles();
-
-    return () => {
-      controller.abort();
-    };
+    void loadSubtitles();
+    return () => controller.abort();
   }, [selectedSubtitleId, subtitleTracks, video.id, token]);
 
   // 3. Subtitle presentation engine - hardware video frame presentation + event listeners + heartbeat
@@ -542,6 +527,20 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       frameHandle = framePlayer.requestVideoFrameCallback(onFrame);
     }
 
+    const onSeeking = () => {
+      isSeekingRef.current = true;
+      const absoluteTime = resumeTime + player.currentTime;
+      seekTargetTimeRef.current = absoluteTime;
+      syncSubtitleCue(absoluteTime);
+    };
+
+    const onSeeked = () => {
+      const absoluteTime = resumeTime + player.currentTime;
+      seekTargetTimeRef.current = absoluteTime;
+      isSeekingRef.current = false;
+      syncSubtitleCue(absoluteTime);
+    };
+
     const onSyncEvent = () => {
       syncSubtitleCue();
     };
@@ -551,14 +550,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       syncSubtitleCue();
     }, 100);
 
-    player.addEventListener('seeked', onSyncEvent);
+    player.addEventListener('seeking', onSeeking);
+    player.addEventListener('seeked', onSeeked);
     player.addEventListener('loadeddata', onSyncEvent);
     player.addEventListener('canplay', onSyncEvent);
 
     return () => {
       if (frameHandle !== undefined) framePlayer.cancelVideoFrameCallback?.(frameHandle);
       window.clearInterval(ticker);
-      player.removeEventListener('seeked', onSyncEvent);
+      player.removeEventListener('seeking', onSeeking);
+      player.removeEventListener('seeked', onSeeked);
       player.removeEventListener('loadeddata', onSyncEvent);
       player.removeEventListener('canplay', onSyncEvent);
     };
@@ -938,7 +939,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
 
   const handleCanPlay = () => {
     setIsBuffering(false);
-    isSeekingRef.current = false;
+    // Do not clear seeking here: canplay may fire before the seek has completed.
     syncSubtitleCue();
   };
 
@@ -949,7 +950,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   const handlePlaying = () => {
     setIsBuffering(false);
     setIsPlaying(true);
-    isSeekingRef.current = false;
     syncSubtitleCue();
     resetControlsTimer(false);
     discordPresenceService.updatePlayback({
@@ -975,9 +975,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
 
   const handleTimeUpdate = () => {
     if (videoRef.current) {
-      if (isSeekingRef.current && videoRef.current.currentTime > 0) {
-        isSeekingRef.current = false;
-      }
+      // timeupdate is not proof that a seek has completed; let the seeked event
+      // release isSeekingRef to avoid syncing against an intermediate timestamp.
       const absTime = resumeTime + videoRef.current.currentTime;
       setCurrentTime(absTime);
       updateBuffered();
