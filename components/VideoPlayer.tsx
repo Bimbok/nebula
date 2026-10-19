@@ -109,12 +109,72 @@ const Icons = {
 };
 
 function convertSrtToVtt(srtText: string): string {
-  let vtt = 'WEBVTT\n\n';
-  vtt += srtText
+  const normalized = srtText
+    .replace(/^\uFEFF/, '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
-  return vtt;
+    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
+    .trim();
+
+  return 'WEBVTT\n\n' + normalized + '\n';
+}
+
+// Convert SubStation Alpha / Advanced SubStation Alpha subtitles to WebVTT.
+// Dialogue fields are split using the [Events] Format declaration so commas in
+// subtitle text are preserved. ASS positioning and styling are simplified.
+function convertAssToVtt(assText: string): string {
+  const lines = assText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  let eventFields: string[] = [];
+  const cues: string[] = [];
+
+  const toVttTime = (value: string): string | null => {
+    const match = value.trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[.](\d{1,2})$/);
+    if (!match) return null;
+    const centiseconds = match[4].padEnd(2, '0').slice(0, 2);
+    return match[1].padStart(2, '0') + ':' + match[2] + ':' + match[3] + '.' + centiseconds + '0';
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/^\[Events\]/i.test(line)) {
+      eventFields = [];
+      continue;
+    }
+    if (/^\[/.test(line)) {
+      eventFields = [];
+      continue;
+    }
+    if (/^Format\s*:/i.test(line) && eventFields.length === 0) {
+      eventFields = line.slice(line.indexOf(':') + 1).split(',').map((field) => field.trim().toLowerCase());
+      continue;
+    }
+    if (!/^Dialogue\s*:/i.test(line) || eventFields.length === 0) continue;
+
+    const values = line.slice(line.indexOf(':') + 1).trim().split(',');
+    if (values.length < eventFields.length) continue;
+    const fields: Record<string, string> = {};
+    eventFields.forEach((field, index) => {
+      fields[field] = index === eventFields.length - 1
+        ? values.slice(index).join(',')
+        : values[index] ?? '';
+    });
+
+    const start = toVttTime(fields.start || '');
+    const end = toVttTime(fields.end || '');
+    const text = (fields.text || '')
+      .replace(/\{[^}]*\}/g, '')
+      .replace(/\\[Nn]/g, '\n')
+      .replace(/\\h/g, ' ')
+      .replace(/<[^>]*>/g, '')
+      .split('\n')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join('\n');
+
+    if (start && end && text) cues.push(start + ' --> ' + end + '\n' + text);
+  }
+
+  return 'WEBVTT\n\n' + cues.join('\n\n') + (cues.length ? '\n\n' : '');
 }
 
 function parseVttTimestamp(str: string): number {
@@ -926,9 +986,26 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       const content = event.target?.result as string;
       if (!content) return;
 
-      let vttContent = content;
-      if (file.name.endsWith('.srt')) {
+      const extension = file.name.split('.').pop()?.toLowerCase();
+      let vttContent: string;
+      if (extension === 'srt') {
         vttContent = convertSrtToVtt(content);
+      } else if (extension === 'ass' || extension === 'ssa') {
+        vttContent = convertAssToVtt(content);
+      } else if (extension === 'vtt') {
+        vttContent = content.replace(/^\uFEFF/, '');
+        if (!/^WEBVTT(?:\s|$)/.test(vttContent.trimStart())) {
+          window.alert('This VTT file is missing the WEBVTT header.');
+          return;
+        }
+      } else {
+        window.alert('Unsupported subtitle format. Please use .srt, .vtt, .ass, or .ssa.');
+        return;
+      }
+
+      if (!vttContent.includes('-->')) {
+        window.alert('No valid subtitle cues were found in this file.');
+        return;
       }
 
       const blob = new Blob([vttContent], { type: 'text/vtt' });
@@ -939,7 +1016,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         streamIndex: -1,
         codec: 'WebVTT',
         language: 'custom',
-        label: `File: ${file.name}`,
+        label: 'File: ' + file.name,
         isCustom: true,
         blobUrl: blobUrl,
       };
@@ -1663,16 +1740,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".srt,.vtt"
+                    accept=".srt,.vtt,.ass,.ssa"
                     onChange={handleLocalSubtitleUpload}
                     className="hidden"
                   />
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    title="Upload local .srt subtitle"
+                    title="Upload local subtitle (.srt, .vtt, .ass, .ssa)"
                     className="text-[10px] text-gray-400 hover:text-white px-1 font-mono hover:bg-white/[0.08] rounded transition-colors shrink-0"
                   >
-                    +SRT
+                    +SUB
                   </button>
                 </div>
 
