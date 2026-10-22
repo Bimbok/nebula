@@ -164,7 +164,7 @@ export const fetchFolderContents = async (
     return {
       folders,
       videos,
-      nextPageToken,
+      nextPageToken: pageToken,
     };
   } catch (error) {
     console.error('Error fetching folder contents for', folderId, error);
