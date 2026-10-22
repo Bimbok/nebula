@@ -23,6 +23,10 @@ export interface TokenClient {
   requestAccessToken: (overrideConfig: { prompt: string }) => void;
 }
 
+export interface CodeClient {
+  requestCode: () => void;
+}
+
 export interface AudioTrackInfo {
   id: number;
   streamIndex: number;

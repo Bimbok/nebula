@@ -42,9 +42,9 @@ Google Drive API (alt=media)
 
 ### A. `/api/stream`
 * **Smart Auto-Codec Audio Engine:**
-  * **⚡ Direct Bitstream Passthrough (Zero Processing):**
+  * **Direct Bitstream Passthrough (Zero Processing):**
     * For tracks using natively playable browser codecs (`aac`, `opus`, `flac`, `mp3`, `vorbis`), audio is directly passed packet-by-packet (`-c:a copy`) with **0% CPU overhead, 0ms latency, and untouched original fidelity**.
-  * **🎙️ Studio Master AAC 320k (Transparent Remux):**
+  * **Studio Master AAC 320k (Transparent Remux):**
     * For proprietary codecs unsupported by desktop Chromium/Firefox (`eac3` / Dolby Digital Plus, `ac3`, `dts`, `truehd`), audio is seamlessly remuxed into pristine 320kbps multi-channel AAC (`-c:a aac -b:a 320k`).
     * Preserves full 5.1 surround sound while eliminating the browser silence bug.
   * **Mathematical PTS Zero-Sync:**
@@ -85,11 +85,21 @@ Google Drive API (alt=media)
 
 ## 5. LAN Sharing & Authentication Flow
 
-* **Session Persistence:** OAuth access token is stored in `localStorage` (`gdrive_oauth_token`) and `document.cookie` (`gdrive_token`).
+* **Dual-Tier OAuth Architecture:**
+  * **Authorization Code Flow with Offline Access:**
+    * When `GOOGLE_CLIENT_SECRET` is configured in `.env.local` or environment variables, the app utilizes Google Identity Services `initCodeClient`.
+    * Code is securely exchanged on the backend (`POST /api/auth/token`) with Google OAuth 2.0 endpoints for both an `access_token` and an offline `refresh_token`.
+    * Proactive silent background refresh triggers 5 minutes before the 1-hour expiration mark via `POST /api/auth/refresh`.
+    * Stream proxy self-healing: If any streaming request (`/api/stream`, `/api/tracks`, `/api/subtitles`) returns HTTP 401 from Google Drive, the server automatically executes a refresh and retries the request transparently with zero playback drops.
+  * **Fallback Token Flow:**
+    * When `GOOGLE_CLIENT_SECRET` is not provided, seamlessly falls back to client-side `initTokenClient`.
+* **Session Persistence:**
+  * Access token stored in `localStorage` (`gdrive_oauth_token`) and persistent cookie (`gdrive_token`).
+  * Refresh token stored in `localStorage` (`gdrive_refresh_token`), cookie (`gdrive_refresh_token`), and server cache (`.cache/auth/session.json`).
 * **LAN / Smart TV Access:**
   * Accessing the app over Wi-Fi is enabled by the "TV & Phone" share modal, which is conditionally displayed when running on localhost.
-  * Dynamically queries the host machine's active network interfaces via Node.js `os.networkInterfaces()` to construct the actual LAN stream URL (e.g. `http://<local-network-ip>:<port>/?token=...`).
-  * App automatically detects `?token=` query parameters on load, installs the token into `localStorage` and `cookie`, and cleans the URL so no Google OAuth login prompt is required on secondary devices.
+  * Dynamically queries the host machine's active network interfaces via Node.js `os.networkInterfaces()` to construct the actual LAN stream URL (e.g. `http://<local-network-ip>:<port>/?token=...&refresh_token=...`).
+  * App automatically detects `?token=` and `?refresh_token=` query parameters on load, installs them into `localStorage` and `cookie`, and cleans the URL so no Google OAuth login prompt is required on secondary devices.
 
 ---
 
@@ -98,7 +108,7 @@ Google Drive API (alt=media)
 * **Any-Device Gateway Bridge:**
   * Connects directly to Discord's live Gateway WebSocket (`wss://gateway.discord.gg/?v=10`) using user authentication so presence broadcasts from anywhere (Desktop, Phone, Tablet, Smart TV, Render cloud).
   * Automatically handles Gateway heartbeats and Opcode 3 `PRESENCE_UPDATE` payloads.
-  * Synchronizes Discord Custom Status (`PATCH /api/v9/users/@me/settings`) with `🎬 Watching <Title>` and emoji indicators.
+  * Synchronizes Discord Custom Status (`PATCH /api/v9/users/@me/settings`) with `Watching <Title>` and activity indicators.
 * **Intelligent Media Title Parser:**
   * Decomposes arbitrary torrent/scene filenames (e.g. `Dark.S01E10.1080p.NF.WEB-DL.mkv`) into clean show names (`Dark`) and episode descriptors (`Season 1 • Episode 10`).
   * Live remaining time calculation, play/pause state reflection, and automatic activity clearing on player exit.

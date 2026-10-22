@@ -99,8 +99,13 @@ const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
 
   const effectiveIp = localIp || (typeof window !== 'undefined' ? window.location.hostname : 'localhost');
   const effectivePort = lanPort || (typeof window !== 'undefined' && window.location.port ? window.location.port : '3000');
-  const shareUrl = token
-    ? `http://${effectiveIp}:${effectivePort}/?token=${encodeURIComponent(token)}`
+  const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('gdrive_refresh_token') : null;
+  const urlParams = new URLSearchParams();
+  if (token) urlParams.set('token', token);
+  if (refreshToken) urlParams.set('refresh_token', refreshToken);
+  const shareQuery = urlParams.toString();
+  const shareUrl = shareQuery
+    ? `http://${effectiveIp}:${effectivePort}/?${shareQuery}`
     : `http://${effectiveIp}:${effectivePort}`;
 
   const handleCopy = () => {
@@ -111,11 +116,11 @@ const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
 
   return (
     <>
-      <header className="sticky top-0 z-30 bg-[#07090e]/80 backdrop-blur-xl border-b border-white/[0.06] transition-all">
+      <header className="sticky top-0 z-30 bg-[#06080d]/85 backdrop-blur-2xl border-b border-white/[0.08] transition-all">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           {/* Logo & Brand */}
           <div className="flex items-center space-x-3 group cursor-pointer">
-            <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500/15 via-purple-500/10 to-cyan-500/15 border border-indigo-500/30 group-hover:border-indigo-400/60 transition-all duration-300 shadow-[0_0_18px_rgba(99,102,241,0.2)] p-0.5">
+            <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500/20 via-purple-500/10 to-cyan-500/20 border border-indigo-500/35 group-hover:border-indigo-400/70 transition-all duration-300 shadow-[0_0_20px_rgba(99,102,241,0.25)] p-0.5">
               <MascotLogo size="sm" animated />
             </div>
             <div>
@@ -123,7 +128,7 @@ const Header: React.FC<HeaderProps> = ({ isSignedIn, onLogout, token }) => {
                 <span className="text-base font-bold tracking-tight text-white group-hover:text-indigo-200 transition-colors">
                   Nebula
                 </span>
-                <span className="text-[9px] uppercase tracking-wider font-mono font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/20 px-1.5 py-0.5 rounded-full">
+                <span className="text-[9px] uppercase tracking-wider font-mono font-bold bg-gradient-to-r from-indigo-500/20 to-purple-500/20 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.2)]">
                   Cinema
                 </span>
               </div>

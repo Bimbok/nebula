@@ -1,10 +1,325 @@
+// server.ts
 import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
+import fs2 from "node:fs";
+import path2 from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execFile } from "node:child_process";
 import { Readable } from "node:stream";
 import os from "node:os";
+
+// authManager.ts
+import fs from "node:fs";
+import path from "node:path";
+function loadEnvFile(filePath) {
+  if (fs.existsSync(filePath)) {
+    try {
+      const content = fs.readFileSync(filePath, "utf8");
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eqIdx = trimmed.indexOf("=");
+        if (eqIdx !== -1) {
+          const key = trimmed.slice(0, eqIdx).trim();
+          let val = trimmed.slice(eqIdx + 1).trim();
+          if (val.startsWith('"') && val.endsWith('"') || val.startsWith("'") && val.endsWith("'")) {
+            val = val.slice(1, -1);
+          }
+          if (!process.env[key]) {
+            process.env[key] = val;
+          }
+        }
+      }
+    } catch {
+    }
+  }
+}
+loadEnvFile(path.resolve(".env"));
+loadEnvFile(path.resolve(".env.local"));
+var authCacheDir = path.resolve(".cache", "auth");
+var authCacheFile = path.join(authCacheDir, "session.json");
+var activeSession = null;
+try {
+  if (!fs.existsSync(authCacheDir)) {
+    fs.mkdirSync(authCacheDir, { recursive: true });
+  } else if (fs.existsSync(authCacheFile)) {
+    const raw = fs.readFileSync(authCacheFile, "utf8");
+    activeSession = JSON.parse(raw);
+  }
+} catch {
+  activeSession = null;
+}
+function saveSession(session) {
+  activeSession = session;
+  try {
+    if (!fs.existsSync(authCacheDir)) {
+      fs.mkdirSync(authCacheDir, { recursive: true });
+    }
+    if (session) {
+      fs.writeFileSync(authCacheFile, JSON.stringify(session, null, 2), "utf8");
+    } else if (fs.existsSync(authCacheFile)) {
+      fs.unlinkSync(authCacheFile);
+    }
+  } catch (e) {
+    console.warn("[Nebula Auth] Failed to save session to disk cache:", e);
+  }
+}
+function getOAuthCredentials() {
+  const clientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "";
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET || process.env.VITE_GOOGLE_CLIENT_SECRET || "";
+  const apiKey = process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || "";
+  return { clientId, clientSecret, apiKey };
+}
+function hasClientSecret() {
+  const { clientSecret } = getOAuthCredentials();
+  return Boolean(clientSecret && clientSecret.trim().length > 0);
+}
+function clearAuthSession() {
+  saveSession(null);
+}
+async function exchangeAuthCode(code) {
+  const { clientId, clientSecret } = getOAuthCredentials();
+  if (!clientId || !clientSecret) {
+    throw new Error("Server is missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET");
+  }
+  const params = new URLSearchParams({
+    code,
+    client_id: clientId,
+    client_secret: clientSecret,
+    redirect_uri: "postmessage",
+    grant_type: "authorization_code"
+  });
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString()
+  });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const errorMsg = data.error_description || data.error || "Failed to exchange authorization code";
+    throw new Error(errorMsg);
+  }
+  const expiresIn = parseInt(data.expires_in, 10) || 3600;
+  const refreshToken = data.refresh_token || activeSession?.refresh_token;
+  const session = {
+    access_token: data.access_token,
+    refresh_token: refreshToken,
+    expires_at: Date.now() + (expiresIn - 60) * 1e3,
+    token_type: data.token_type || "Bearer",
+    scope: data.scope,
+    updated_at: Date.now()
+  };
+  saveSession(session);
+  return {
+    ...data,
+    refresh_token: refreshToken
+  };
+}
+async function refreshAccessToken(refreshTokenArg) {
+  const { clientId, clientSecret } = getOAuthCredentials();
+  if (!clientId || !clientSecret) {
+    throw new Error("Server is missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET");
+  }
+  const refreshToken = refreshTokenArg || activeSession?.refresh_token;
+  if (!refreshToken) {
+    throw new Error("No refresh token available to refresh session");
+  }
+  const params = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token"
+  });
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString()
+  });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    const errorMsg = data.error_description || data.error || "Failed to refresh token";
+    throw new Error(errorMsg);
+  }
+  const expiresIn = parseInt(data.expires_in, 10) || 3600;
+  const newRefreshToken = data.refresh_token || refreshToken;
+  const session = {
+    access_token: data.access_token,
+    refresh_token: newRefreshToken,
+    expires_at: Date.now() + (expiresIn - 60) * 1e3,
+    token_type: data.token_type || "Bearer",
+    scope: data.scope || activeSession?.scope,
+    updated_at: Date.now()
+  };
+  saveSession(session);
+  return {
+    ...data,
+    refresh_token: newRefreshToken
+  };
+}
+function extractEffectiveToken(req, queryToken) {
+  let token = queryToken?.trim();
+  if (!token && req.headers?.authorization) {
+    token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
+  }
+  if (!token && req.headers?.cookie) {
+    const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
+    if (match) token = decodeURIComponent(match[1].trim());
+  }
+  if (!token && activeSession?.access_token) {
+    token = activeSession.access_token;
+  }
+  if (activeSession?.access_token && token && token !== activeSession.access_token && activeSession.expires_at > Date.now()) {
+    token = activeSession.access_token;
+  }
+  return token || "";
+}
+async function getOrRefreshToken(req, queryToken) {
+  let token = extractEffectiveToken(req, queryToken);
+  if (activeSession && activeSession.expires_at <= Date.now() + 6e4 && activeSession.refresh_token && hasClientSecret()) {
+    try {
+      const refreshed = await refreshAccessToken();
+      if (refreshed?.access_token) {
+        token = refreshed.access_token;
+      }
+    } catch (e) {
+      console.warn("[Nebula Auth] Proactive token refresh notice:", e);
+    }
+  }
+  return token;
+}
+async function handleGoogleDrive401(req) {
+  if (!hasClientSecret()) return null;
+  try {
+    let reqRefreshToken;
+    if (req?.headers?.cookie) {
+      const match = req.headers.cookie.match(/gdrive_refresh_token=([^;]+)/);
+      if (match) reqRefreshToken = decodeURIComponent(match[1].trim());
+    }
+    const result = await refreshAccessToken(reqRefreshToken);
+    return result?.access_token || null;
+  } catch (err) {
+    console.error("[Nebula Auth] Automatic 401 token recovery failed:", err);
+    return null;
+  }
+}
+async function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1e6) {
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        resolve({});
+      }
+    });
+    req.on("error", () => resolve({}));
+  });
+}
+async function handleAuthRoutes(req, res) {
+  const rawUrl = req.url || "";
+  const url = new URL(rawUrl, `http://${req.headers?.host || "localhost:3000"}`);
+  const pathname = url.pathname;
+  if (pathname === "/api/auth/token" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const code = body?.code;
+      if (!code) {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: "Missing authorization code" }));
+        return true;
+      }
+      const result = await exchangeAuthCode(code);
+      const cookies = [
+        `gdrive_token=${encodeURIComponent(result.access_token)}; Max-Age=2592000; Path=/; SameSite=Lax`
+      ];
+      if (result.refresh_token) {
+        cookies.push(
+          `gdrive_refresh_token=${encodeURIComponent(result.refresh_token)}; Max-Age=31536000; Path=/; SameSite=Lax`
+        );
+      }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Set-Cookie", cookies);
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      console.error("[Nebula Auth] Token exchange error:", err);
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: err.message || "Token exchange failed" }));
+    }
+    return true;
+  }
+  if (pathname === "/api/auth/refresh" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      let refreshToken = body?.refresh_token;
+      if (!refreshToken && req.headers?.cookie) {
+        const match = req.headers.cookie.match(/gdrive_refresh_token=([^;]+)/);
+        if (match) refreshToken = decodeURIComponent(match[1].trim());
+      }
+      if (!refreshToken && activeSession?.refresh_token) {
+        refreshToken = activeSession.refresh_token;
+      }
+      if (!refreshToken) {
+        res.statusCode = 401;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: "no_refresh_token", message: "No refresh token available. Please sign in." }));
+        return true;
+      }
+      const result = await refreshAccessToken(refreshToken);
+      const cookies = [
+        `gdrive_token=${encodeURIComponent(result.access_token)}; Max-Age=2592000; Path=/; SameSite=Lax`
+      ];
+      if (result.refresh_token) {
+        cookies.push(
+          `gdrive_refresh_token=${encodeURIComponent(result.refresh_token)}; Max-Age=31536000; Path=/; SameSite=Lax`
+        );
+      }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Set-Cookie", cookies);
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      console.warn("[Nebula Auth] Token refresh notice:", err?.message || err);
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: err.message || "Token refresh failed" }));
+    }
+    return true;
+  }
+  if (pathname === "/api/auth/logout" && req.method === "POST") {
+    clearAuthSession();
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Set-Cookie", [
+      "gdrive_token=; Max-Age=0; Path=/; SameSite=Lax",
+      "gdrive_refresh_token=; Max-Age=0; Path=/; SameSite=Lax"
+    ]);
+    res.end(JSON.stringify({ success: true }));
+    return true;
+  }
+  if (pathname === "/api/auth/session" && req.method === "GET") {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        hasSession: Boolean(activeSession?.access_token),
+        hasRefreshToken: Boolean(activeSession?.refresh_token),
+        expiresAt: activeSession?.expires_at || 0
+      })
+    );
+    return true;
+  }
+  return false;
+}
+
+// server.ts
 function getLocalNetworkIp() {
   try {
     const interfaces = os.networkInterfaces();
@@ -28,13 +343,13 @@ function getLocalNetworkIp() {
     return "127.0.0.1";
   }
 }
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const trackMetadataCache = /* @__PURE__ */ new Map();
-const metaCacheDir = path.resolve(".cache", "metadata");
-if (!fs.existsSync(metaCacheDir)) {
+var __filename = fileURLToPath(import.meta.url);
+var __dirname = path2.dirname(__filename);
+var trackMetadataCache = /* @__PURE__ */ new Map();
+var metaCacheDir = path2.resolve(".cache", "metadata");
+if (!fs2.existsSync(metaCacheDir)) {
   try {
-    fs.mkdirSync(metaCacheDir, { recursive: true });
+    fs2.mkdirSync(metaCacheDir, { recursive: true });
   } catch (e) {
   }
 }
@@ -65,10 +380,10 @@ function getAudioTrackCodec(fileId, audioIndex) {
   if (cached?.audioTracks && cached.audioTracks[audioIndex]) {
     return cached.audioTracks[audioIndex].codec;
   }
-  const metaCacheFile = path.join(metaCacheDir, `${fileId}.json`);
-  if (fs.existsSync(metaCacheFile)) {
+  const metaCacheFile = path2.join(metaCacheDir, `${fileId}.json`);
+  if (fs2.existsSync(metaCacheFile)) {
     try {
-      const fileData = JSON.parse(fs.readFileSync(metaCacheFile, "utf8"));
+      const fileData = JSON.parse(fs2.readFileSync(metaCacheFile, "utf8"));
       if (fileData.audioTracks && fileData.audioTracks[audioIndex]) {
         return fileData.audioTracks[audioIndex].codec;
       }
@@ -77,7 +392,7 @@ function getAudioTrackCodec(fileId, audioIndex) {
   }
   return null;
 }
-const handler = async (req, res, next) => {
+var handler = async (req, res, next) => {
   const rawUrl = req.url || "";
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -87,18 +402,24 @@ const handler = async (req, res, next) => {
     res.end();
     return;
   }
+  if (rawUrl.startsWith("/api/auth/")) {
+    const handled = await handleAuthRoutes(req, res);
+    if (handled) return;
+  }
   if (rawUrl.startsWith("/api/config") || rawUrl.startsWith("/api/network")) {
     const localIp = getLocalNetworkIp();
     const hostHeader = req.headers.host || "";
     const port = hostHeader.includes(":") ? parseInt(hostHeader.split(":")[1], 10) : process.env.PORT ? parseInt(process.env.PORT, 10) : 3e3;
     const isCloud = Boolean(process.env.RENDER || process.env.VERCEL);
+    const { clientId, apiKey, clientSecret } = getOAuthCredentials();
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "no-cache");
     res.end(JSON.stringify({
-      GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "",
-      GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || "",
+      GOOGLE_CLIENT_ID: clientId,
+      GOOGLE_API_KEY: apiKey,
+      hasClientSecret: Boolean(clientSecret && clientSecret.length > 0),
       localIp,
       port,
       isCloud,
@@ -110,14 +431,7 @@ const handler = async (req, res, next) => {
     try {
       const url = new URL(rawUrl, `http://${req.headers.host || "localhost:3000"}`);
       const fileId = url.searchParams.get("fileId");
-      let token = url.searchParams.get("token");
-      if (!token && req.headers.cookie) {
-        const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
-        if (match) token = match[1].trim();
-      }
-      if (!token && req.headers.authorization) {
-        token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
-      }
+      const token = await getOrRefreshToken(req, url.searchParams.get("token"));
       if (!fileId || !token) {
         res.statusCode = 400;
         res.setHeader("Content-Type", "application/json");
@@ -137,10 +451,10 @@ const handler = async (req, res, next) => {
         }));
         return;
       }
-      const metaCacheFile = path.join(metaCacheDir, `${fileId}.json`);
-      if (fs.existsSync(metaCacheFile)) {
+      const metaCacheFile = path2.join(metaCacheDir, `${fileId}.json`);
+      if (fs2.existsSync(metaCacheFile)) {
         try {
-          const diskContent = fs.readFileSync(metaCacheFile, "utf-8");
+          const diskContent = fs2.readFileSync(metaCacheFile, "utf-8");
           const parsed = JSON.parse(diskContent);
           if (parsed && (parsed.audioTracks || parsed.duration > 0)) {
             trackMetadataCache.set(fileId, {
@@ -240,7 +554,7 @@ const handler = async (req, res, next) => {
               duration: probedDuration
             };
             trackMetadataCache.set(fileId, { ...metaPayload, timestamp: Date.now() });
-            fs.writeFile(metaCacheFile, JSON.stringify(metaPayload), () => {
+            fs2.writeFile(metaCacheFile, JSON.stringify(metaPayload), () => {
             });
             res.statusCode = 200;
             res.setHeader("Content-Type", "application/json");
@@ -269,14 +583,7 @@ const handler = async (req, res, next) => {
       const fileId = url.searchParams.get("fileId");
       const streamIndex = url.searchParams.get("streamIndex");
       const isBitmap = url.searchParams.get("isBitmap") === "true";
-      let token = url.searchParams.get("token");
-      if (!token && req.headers.cookie) {
-        const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
-        if (match) token = match[1].trim();
-      }
-      if (!token && req.headers.authorization) {
-        token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
-      }
+      const token = await getOrRefreshToken(req, url.searchParams.get("token"));
       if (!fileId || !token || streamIndex === null) {
         res.statusCode = 400;
         res.setHeader("Content-Type", "text/plain");
@@ -291,17 +598,17 @@ const handler = async (req, res, next) => {
         res.end("WEBVTT\n\n00:00:01.000 --> 00:00:10.000\n[PGS/Bitmap Subtitle: Please choose a text subtitle track or upload .srt]\n\n");
         return;
       }
-      const cacheDir = path.resolve(".cache", "subtitles");
-      if (!fs.existsSync(cacheDir)) {
+      const cacheDir = path2.resolve(".cache", "subtitles");
+      if (!fs2.existsSync(cacheDir)) {
         try {
-          fs.mkdirSync(cacheDir, { recursive: true });
+          fs2.mkdirSync(cacheDir, { recursive: true });
         } catch {
         }
       }
-      const cacheFile = path.join(cacheDir, `${fileId}_${streamIndex}.vtt`);
-      if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 30) {
+      const cacheFile = path2.join(cacheDir, `${fileId}_${streamIndex}.vtt`);
+      if (fs2.existsSync(cacheFile) && fs2.statSync(cacheFile).size > 30) {
         try {
-          const cached = fs.readFileSync(cacheFile);
+          const cached = fs2.readFileSync(cacheFile);
           if (isValidWebVtt(cached)) {
             res.statusCode = 200;
             res.setHeader("Content-Type", "text/vtt; charset=utf-8");
@@ -311,7 +618,7 @@ const handler = async (req, res, next) => {
             res.end(cached);
             return;
           }
-          fs.unlinkSync(cacheFile);
+          fs2.unlinkSync(cacheFile);
         } catch {
         }
       }
@@ -367,8 +674,8 @@ const handler = async (req, res, next) => {
         if (code === 0 && isValidWebVtt(fullData)) {
           const tempFile = `${cacheFile}.tmp.${Date.now()}`;
           try {
-            fs.writeFileSync(tempFile, fullData);
-            fs.renameSync(tempFile, cacheFile);
+            fs2.writeFileSync(tempFile, fullData);
+            fs2.renameSync(tempFile, cacheFile);
           } catch (e) {
             console.warn("[subtitle cache write error]", e);
           }
@@ -411,30 +718,23 @@ const handler = async (req, res, next) => {
       const url = new URL(rawUrl, `http://${req.headers.host || "localhost:3000"}`);
       const fileId = url.searchParams.get("fileId");
       const googleThumbnailUrl = url.searchParams.get("url");
-      let token = url.searchParams.get("token");
-      if (!token && req.headers.cookie) {
-        const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
-        if (match) token = match[1].trim();
-      }
-      if (!token && req.headers.authorization) {
-        token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
-      }
+      const token = await getOrRefreshToken(req, url.searchParams.get("token"));
       if (!fileId) {
         res.statusCode = 400;
         res.end("Missing fileId");
         return;
       }
-      const cacheDir = path.resolve(".cache", "thumbnails");
-      if (!fs.existsSync(cacheDir)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
+      const cacheDir = path2.resolve(".cache", "thumbnails");
+      if (!fs2.existsSync(cacheDir)) {
+        fs2.mkdirSync(cacheDir, { recursive: true });
       }
-      const cacheFile = path.join(cacheDir, `${fileId}.jpg`);
-      if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 500) {
+      const cacheFile = path2.join(cacheDir, `${fileId}.jpg`);
+      if (fs2.existsSync(cacheFile) && fs2.statSync(cacheFile).size > 500) {
         res.statusCode = 200;
         res.setHeader("Content-Type", "image/jpeg");
         res.setHeader("Cache-Control", "public, max-age=86400");
         res.setHeader("Access-Control-Allow-Origin", "*");
-        fs.createReadStream(cacheFile).pipe(res);
+        fs2.createReadStream(cacheFile).pipe(res);
         return;
       }
       if (googleThumbnailUrl && googleThumbnailUrl.startsWith("http")) {
@@ -445,7 +745,7 @@ const handler = async (req, res, next) => {
           if (gRes.ok) {
             const buffer = Buffer.from(await gRes.arrayBuffer());
             if (buffer.length > 500) {
-              fs.writeFileSync(cacheFile, buffer);
+              fs2.writeFileSync(cacheFile, buffer);
               res.statusCode = 200;
               res.setHeader("Content-Type", gRes.headers.get("content-type") || "image/jpeg");
               res.setHeader("Cache-Control", "public, max-age=86400");
@@ -489,7 +789,7 @@ const handler = async (req, res, next) => {
       ffmpeg.on("close", (code) => {
         if (code === 0 && chunks.length > 0) {
           const imgBuffer = Buffer.concat(chunks);
-          fs.writeFile(cacheFile, imgBuffer, () => {
+          fs2.writeFile(cacheFile, imgBuffer, () => {
           });
           if (!res.headersSent) {
             res.statusCode = 200;
@@ -523,7 +823,7 @@ const handler = async (req, res, next) => {
           retryFfmpeg.on("close", (rCode) => {
             if (rCode === 0 && retryChunks.length > 0) {
               const img = Buffer.concat(retryChunks);
-              fs.writeFile(cacheFile, img, () => {
+              fs2.writeFile(cacheFile, img, () => {
               });
               if (!res.headersSent) {
                 res.statusCode = 200;
@@ -563,14 +863,7 @@ const handler = async (req, res, next) => {
     const fileId = url.searchParams.get("fileId");
     const audioIndexStr = url.searchParams.get("audioIndex");
     const startTimeStr = url.searchParams.get("startTime");
-    let token = url.searchParams.get("token");
-    if (!token && req.headers.cookie) {
-      const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
-      if (match) token = match[1].trim();
-    }
-    if (!token && req.headers.authorization) {
-      token = req.headers.authorization.replace(/^Bearer\s+/i, "").trim();
-    }
+    let token = await getOrRefreshToken(req, url.searchParams.get("token"));
     if (!fileId || !token) {
       res.statusCode = 400;
       res.setHeader("Content-Type", "application/json");
@@ -589,7 +882,7 @@ const handler = async (req, res, next) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Headers", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Cache-Control", "public, max-age=86400, no-transform");
       res.setHeader("Transfer-Encoding", "chunked");
       res.setHeader("Content-Type", "video/mp4");
       if (req.method === "HEAD") {
@@ -624,7 +917,7 @@ const handler = async (req, res, next) => {
         "-tcp_nodelay",
         "1",
         "-recv_buffer_size",
-        "4194304",
+        "16777216",
         "-noaccurate_seek",
         "-ss",
         startTime.toString(),
@@ -647,6 +940,8 @@ const handler = async (req, res, next) => {
         "frag_keyframe+empty_moov+default_base_moof",
         "-frag_duration",
         "1000000",
+        "-max_muxing_queue_size",
+        "4096",
         "-flush_packets",
         "1",
         "pipe:1"
@@ -690,10 +985,22 @@ const handler = async (req, res, next) => {
     if (rangeHeader) {
       requestHeaders["Range"] = rangeHeader;
     }
-    const driveRes = await fetch(driveUrl, {
+    let driveRes = await fetch(driveUrl, {
       method: req.method,
       headers: requestHeaders
     });
+    if (driveRes.status === 401) {
+      const freshToken = await handleGoogleDrive401(req);
+      if (freshToken) {
+        token = freshToken;
+        requestHeaders["Authorization"] = `Bearer ${token}`;
+        driveRes = await fetch(driveUrl, {
+          method: req.method,
+          headers: requestHeaders
+        });
+        res.setHeader("Set-Cookie", `gdrive_token=${encodeURIComponent(token)}; Max-Age=2592000; Path=/; SameSite=Lax`);
+      }
+    }
     if (!driveRes.ok && driveRes.status !== 206) {
       const errorText = await driveRes.text();
       console.error(`[Drive Stream Proxy Error] Status: ${driveRes.status}`, errorText);
@@ -748,7 +1055,7 @@ const handler = async (req, res, next) => {
     }
   }
 };
-const MIME_TYPES = {
+var MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -766,21 +1073,21 @@ const MIME_TYPES = {
   ".webm": "video/webm"
 };
 function serveStatic(req, res) {
-  const distDir = path.resolve(__dirname, "dist");
+  const distDir = path2.resolve(__dirname, "dist");
   let pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
   if (pathname === "/" || pathname === "") pathname = "/index.html";
-  let filePath = path.join(distDir, pathname);
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    filePath = path.join(distDir, "index.html");
+  let filePath = path2.join(distDir, pathname);
+  if (!fs2.existsSync(filePath) || fs2.statSync(filePath).isDirectory()) {
+    filePath = path2.join(distDir, "index.html");
   }
-  if (!fs.existsSync(filePath)) {
+  if (!fs2.existsSync(filePath)) {
     res.statusCode = 404;
     res.end("Not Found. Please run `npm run build` first.");
     return;
   }
   if (filePath.endsWith("index.html")) {
     try {
-      let html = fs.readFileSync(filePath, "utf-8");
+      let html = fs2.readFileSync(filePath, "utf-8");
       const clientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "";
       const apiKey = process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || "";
       const configScript = `
@@ -803,15 +1110,15 @@ function serveStatic(req, res) {
     } catch (e) {
     }
   }
-  const ext = path.extname(filePath).toLowerCase();
+  const ext = path2.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
   res.statusCode = 200;
   res.setHeader("Content-Type", contentType);
-  fs.createReadStream(filePath).pipe(res);
+  fs2.createReadStream(filePath).pipe(res);
 }
-const PORT = parseInt(process.env.PORT || "3000", 10);
-const HOST = "0.0.0.0";
-const server = http.createServer(async (req, res) => {
+var PORT = parseInt(process.env.PORT || "3000", 10);
+var HOST = "0.0.0.0";
+var server = http.createServer(async (req, res) => {
   if (req.url && req.url.startsWith("/api/")) {
     try {
       await handler(req, res, () => serveStatic(req, res));

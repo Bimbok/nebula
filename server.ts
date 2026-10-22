@@ -5,6 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { Readable } from 'node:stream';
 import os from 'node:os';
+import {
+  handleAuthRoutes,
+  getOAuthCredentials,
+  hasClientSecret,
+  getOrRefreshToken,
+  handleGoogleDrive401,
+} from './authManager';
 
 function getLocalNetworkIp(): string {
   try {
@@ -101,6 +108,14 @@ const handler = async (req: any, res: any, next: any) => {
     }
 
     // -------------------------------------------------------------
+    // Auth Routes (/api/auth/token, /api/auth/refresh, /api/auth/logout, /api/auth/session)
+    // -------------------------------------------------------------
+    if (rawUrl.startsWith('/api/auth/')) {
+      const handled = await handleAuthRoutes(req, res);
+      if (handled) return;
+    }
+
+    // -------------------------------------------------------------
     // 0. /api/config & /api/network : Runtime environment & network config
     // -------------------------------------------------------------
     if (rawUrl.startsWith('/api/config') || rawUrl.startsWith('/api/network')) {
@@ -110,14 +125,16 @@ const handler = async (req: any, res: any, next: any) => {
         ? parseInt(hostHeader.split(':')[1], 10)
         : (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
       const isCloud = Boolean(process.env.RENDER || process.env.VERCEL);
+      const { clientId, apiKey, clientSecret } = getOAuthCredentials();
 
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Cache-Control', 'no-cache');
       res.end(JSON.stringify({
-        GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '',
-        GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || process.env.VITE_GOOGLE_API_KEY || '',
+        GOOGLE_CLIENT_ID: clientId,
+        GOOGLE_API_KEY: apiKey,
+        hasClientSecret: Boolean(clientSecret && clientSecret.length > 0),
         localIp,
         port,
         isCloud,
@@ -133,15 +150,7 @@ const handler = async (req: any, res: any, next: any) => {
       try {
         const url = new URL(rawUrl, `http://${req.headers.host || 'localhost:3000'}`);
         const fileId = url.searchParams.get('fileId');
-        let token = url.searchParams.get('token');
-
-        if (!token && req.headers.cookie) {
-          const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
-          if (match) token = match[1].trim();
-        }
-        if (!token && req.headers.authorization) {
-          token = req.headers.authorization.replace(/^Bearer\s+/i, '').trim();
-        }
+        const token = await getOrRefreshToken(req, url.searchParams.get('token'));
 
         if (!fileId || !token) {
           res.statusCode = 400;
@@ -314,15 +323,7 @@ const handler = async (req: any, res: any, next: any) => {
         const fileId = url.searchParams.get('fileId');
         const streamIndex = url.searchParams.get('streamIndex');
         const isBitmap = url.searchParams.get('isBitmap') === 'true';
-        let token = url.searchParams.get('token');
-
-        if (!token && req.headers.cookie) {
-          const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
-          if (match) token = match[1].trim();
-        }
-        if (!token && req.headers.authorization) {
-          token = req.headers.authorization.replace(/^Bearer\s+/i, '').trim();
-        }
+        const token = await getOrRefreshToken(req, url.searchParams.get('token'));
 
         if (!fileId || !token || streamIndex === null) {
           res.statusCode = 400;
@@ -461,15 +462,7 @@ const handler = async (req: any, res: any, next: any) => {
         const url = new URL(rawUrl, `http://${req.headers.host || 'localhost:3000'}`);
         const fileId = url.searchParams.get('fileId');
         const googleThumbnailUrl = url.searchParams.get('url');
-        let token = url.searchParams.get('token');
-
-        if (!token && req.headers.cookie) {
-          const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
-          if (match) token = match[1].trim();
-        }
-        if (!token && req.headers.authorization) {
-          token = req.headers.authorization.replace(/^Bearer\s+/i, '').trim();
-        }
+        const token = await getOrRefreshToken(req, url.searchParams.get('token'));
 
         if (!fileId) {
           res.statusCode = 400;
@@ -617,18 +610,7 @@ const handler = async (req: any, res: any, next: any) => {
       const fileId = url.searchParams.get('fileId');
       const audioIndexStr = url.searchParams.get('audioIndex');
       const startTimeStr = url.searchParams.get('startTime');
-      let token = url.searchParams.get('token');
-
-      // Check cookie if token not in query param
-      if (!token && req.headers.cookie) {
-        const match = req.headers.cookie.match(/gdrive_token=([^;]+)/);
-        if (match) token = match[1].trim();
-      }
-
-      // Check Authorization header
-      if (!token && req.headers.authorization) {
-        token = req.headers.authorization.replace(/^Bearer\s+/i, '').trim();
-      }
+      let token = await getOrRefreshToken(req, url.searchParams.get('token'));
 
       if (!fileId || !token) {
         res.statusCode = 400;
@@ -655,7 +637,7 @@ const handler = async (req: any, res: any, next: any) => {
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Headers', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Cache-Control', 'public, max-age=86400, no-transform');
         res.setHeader('Transfer-Encoding', 'chunked');
         res.setHeader('Content-Type', 'video/mp4');
 
@@ -689,7 +671,7 @@ const handler = async (req: any, res: any, next: any) => {
           '-reconnect_delay_max', '2',
           '-multiple_requests', '1',
           '-tcp_nodelay', '1',
-          '-recv_buffer_size', '4194304',
+          '-recv_buffer_size', '16777216',
           '-noaccurate_seek',
           '-ss', startTime.toString(),
           '-headers', headersParam,
@@ -702,6 +684,7 @@ const handler = async (req: any, res: any, next: any) => {
           '-f', 'mp4',
           '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
           '-frag_duration', '1000000',
+          '-max_muxing_queue_size', '4096',
           '-flush_packets', '1',
           'pipe:1',
         ];
@@ -753,10 +736,23 @@ const handler = async (req: any, res: any, next: any) => {
         requestHeaders['Range'] = rangeHeader;
       }
 
-      const driveRes = await fetch(driveUrl, {
+      let driveRes = await fetch(driveUrl, {
         method: req.method,
         headers: requestHeaders,
       });
+
+      if (driveRes.status === 401) {
+        const freshToken = await handleGoogleDrive401(req);
+        if (freshToken) {
+          token = freshToken;
+          requestHeaders['Authorization'] = `Bearer ${token}`;
+          driveRes = await fetch(driveUrl, {
+            method: req.method,
+            headers: requestHeaders,
+          });
+          res.setHeader('Set-Cookie', `gdrive_token=${encodeURIComponent(token)}; Max-Age=2592000; Path=/; SameSite=Lax`);
+        }
+      }
 
       if (!driveRes.ok && driveRes.status !== 206) {
         const errorText = await driveRes.text();

@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { GoogleDriveFile } from '../types';
-
 import { getWatchProgress } from '../services/watchProgressService';
+import { parseMediaTitle } from '../services/mediaTitleParser';
 
 interface VideoItemProps {
   video: GoogleDriveFile;
@@ -21,6 +21,7 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
   const [imgError, setImgError] = useState<boolean>(false);
   const [watchProgress, setWatchProgress] = useState(() => getWatchProgress(video.id));
 
+  const parsed = useMemo(() => parseMediaTitle(video.name), [video.name]);
   const token = window.gapi?.client?.getToken?.()?.access_token || '';
 
   // Update progress if changed elsewhere
@@ -81,15 +82,16 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
   };
 
   const ext = (video.name.split('.').pop() || 'VID').toUpperCase().slice(0, 4);
+  const height = video.videoMediaMetadata?.height;
 
   return (
     <div
       ref={itemRef}
       onClick={() => onSelect(video)}
-      className="group cursor-pointer bg-[#0e111a]/90 hover:bg-[#131724] border border-white/[0.06] hover:border-indigo-500/40 rounded-2xl overflow-hidden shadow-lg hover:shadow-[0_12px_30px_-10px_rgba(99,102,241,0.22)] transition-all duration-300 transform hover:-translate-y-1 flex flex-col"
+      className="group cursor-pointer glass-card rounded-2xl overflow-hidden transition-all duration-300 transform hover:-translate-y-1.5 flex flex-col relative"
     >
       {/* 16:9 Thumbnail Area */}
-      <div className="relative aspect-video bg-[#080a10] overflow-hidden flex items-center justify-center">
+      <div className="relative aspect-video bg-[#07090f] overflow-hidden flex items-center justify-center">
         {/* Placeholder skeleton */}
         {(!imgLoaded || !inView) && !imgError && (
           <div className="absolute inset-0 bg-white/[0.02] animate-pulse flex items-center justify-center">
@@ -112,35 +114,39 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
           />
         ) : imgError ? (
           <div className="w-full h-full flex flex-col items-center justify-center bg-white/[0.02] text-gray-500 p-2 text-center">
-            <PlayIcon className="w-8 h-8 mb-1 opacity-30 text-gray-400" />
+            <PlayIcon className="w-8 h-8 mb-1 opacity-25 text-gray-400" />
             <span className="text-[10px] font-mono text-gray-500">Video</span>
           </div>
         ) : null}
 
-        {/* Dark gradient overlay */}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 opacity-60 group-hover:opacity-40 transition-opacity" />
+        {/* Multi-stop cinematic dark vignette */}
+        <div className="absolute inset-0 bg-gradient-to-t from-[#0c0f18] via-black/20 to-black/30 opacity-70 group-hover:opacity-40 transition-opacity" />
 
         {/* Floating Play Button on Hover */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-11 h-11 rounded-full bg-indigo-600/90 backdrop-blur-md text-white flex items-center justify-center shadow-2xl opacity-0 group-hover:opacity-100 scale-75 group-hover:scale-100 transition-all duration-300 group-hover:shadow-[0_0_20px_rgba(99,102,241,0.6)]">
+          <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-500 text-white flex items-center justify-center shadow-[0_0_24px_rgba(99,102,241,0.65)] opacity-0 group-hover:opacity-100 scale-75 group-hover:scale-100 transition-all duration-300">
             <PlayIcon className="w-5 h-5 ml-0.5" />
           </div>
         </div>
 
         {/* Resolution Badge */}
-        {video.videoMediaMetadata?.height && (
-          <div className="absolute top-2.5 left-2.5 bg-black/70 backdrop-blur-md text-indigo-300 border border-indigo-500/30 text-[10px] font-mono font-bold px-2 py-0.5 rounded-md shadow-sm">
-            {video.videoMediaMetadata.height >= 2160
-              ? '4K UHD'
-              : video.videoMediaMetadata.height >= 1080
-              ? '1080p'
-              : `${video.videoMediaMetadata.height}p`}
+        {height && (
+          <div
+            className={`absolute top-2.5 left-2.5 backdrop-blur-md text-[10px] font-mono font-bold px-2 py-0.5 rounded-md shadow-sm border ${
+              height >= 2160
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_10px_rgba(245,158,11,0.25)]'
+                : height >= 1080
+                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/35 shadow-[0_0_8px_rgba(99,102,241,0.2)]'
+                : 'bg-black/60 text-gray-300 border-white/15'
+            }`}
+          >
+            {height >= 2160 ? '4K UHD' : height >= 1080 ? '1080p' : `${height}p`}
           </div>
         )}
 
         {/* Duration Badge */}
         {video.videoMediaMetadata?.durationMillis && (
-          <div className="absolute bottom-2.5 right-2.5 bg-black/80 backdrop-blur-md text-white text-[10px] font-mono font-medium px-2 py-0.5 rounded-md shadow-sm">
+          <div className="absolute bottom-2.5 right-2.5 bg-black/80 backdrop-blur-md text-white text-[10px] font-mono font-medium px-2 py-0.5 rounded-md shadow-sm border border-white/10">
             {formatDuration(video.videoMediaMetadata.durationMillis)}
           </div>
         )}
@@ -149,7 +155,7 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
         {watchProgress && watchProgress.progressPercent > 0 && (
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/60 overflow-hidden">
             <div
-              className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-400 rounded-r-full shadow-[0_0_8px_rgba(99,102,241,0.8)]"
+              className="h-full bg-gradient-to-r from-cyan-400 via-indigo-500 to-purple-500 rounded-r-full shadow-[0_0_8px_rgba(99,102,241,0.9)]"
               style={{ width: `${watchProgress.progressPercent}%` }}
             />
           </div>
@@ -158,18 +164,36 @@ const VideoItem: React.FC<VideoItemProps> = ({ video, onSelect }) => {
 
       {/* Info Details */}
       <div className="p-3.5 flex flex-col flex-1 justify-between">
-        <h3
-          className="text-xs sm:text-sm font-medium text-gray-200 line-clamp-2 group-hover:text-white transition-colors duration-200 leading-snug"
-          title={video.name}
-        >
-          {video.name}
-        </h3>
+        <div>
+          <h3
+            className="text-xs sm:text-sm font-semibold text-gray-100 line-clamp-1 group-hover:text-indigo-300 transition-colors duration-200 tracking-tight"
+            title={video.name}
+          >
+            {parsed.cleanTitle}
+          </h3>
 
-        <div className="flex items-center justify-between text-[11px] text-gray-400 mt-3 pt-2 border-t border-white/[0.04]">
+          <div className="flex items-center space-x-2 text-[11px] text-gray-400 mt-1">
+            {parsed.isEpisode ? (
+              <span className="font-medium text-cyan-400/90 font-mono text-[11px] tracking-wide">
+                {parsed.displayState}
+              </span>
+            ) : parsed.year ? (
+              <span className="font-mono text-[11px] text-gray-400">
+                {parsed.year}
+              </span>
+            ) : (
+              <span className="text-[11px] text-gray-500 font-mono">
+                Video
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between text-[11px] text-gray-400 mt-3 pt-2.5 border-t border-white/[0.05]">
           <span className="font-mono text-gray-400 text-[11px]">
             {formatFileSize(video.size) || 'Nebula Stream'}
           </span>
-          <span className="text-[9px] uppercase font-mono font-semibold tracking-wider text-gray-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04]">
+          <span className="text-[9px] uppercase font-mono font-bold tracking-wider text-gray-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.05]">
             {ext}
           </span>
         </div>
