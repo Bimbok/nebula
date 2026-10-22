@@ -31,6 +31,7 @@ Google Drive API (alt=media)
          ▼
 [Nebula React Frontend]
    ├── VideoPlayer      ──► Floating glass player, frame-accurate rVFC subtitle sync
+   ├── FolderExplorer   ──► Google Drive directory tree navigation & breadcrumbs
    ├── VideoGrid/Item   ──► IntersectionObserver lazy-loaded cards with resolution chips
    ├── Header & Modals  ──► LAN stream sharing to Smart TVs / mobile
    └── Search/Filter    ──► Client-side search and sorting (Recent, Name, Size)
@@ -135,6 +136,8 @@ Google Drive API (alt=media)
 ```
 ├── App.tsx                     # Main layout, search capsule, infinite scroll, auth state
 ├── components/
+│   ├── ContinueWatching.tsx    # Carousel of recently watched videos with progress
+│   ├── FolderExplorer.tsx      # Google Drive interactive folder browser & breadcrumbs
 │   ├── Header.tsx              # Minimalist glass header, LAN pulse badge, TV share modal, brand mascot
 │   ├── Loader.tsx              # Glowing cinematic ring spinner
 │   ├── Login.tsx               # Nebula welcome portal, Google OAuth trigger, hero mascot

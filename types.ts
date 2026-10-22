@@ -11,6 +11,21 @@ export interface GoogleDriveFile {
     height?: number;
   };
   size?: string;
+  parents?: string[];
+  modifiedTime?: string;
+}
+
+export interface GoogleDriveFolder {
+  id: string;
+  name: string;
+  mimeType: string;
+  parents?: string[];
+  modifiedTime?: string;
+}
+
+export interface BreadcrumbItem {
+  id: string;
+  name: string;
 }
 
 export interface GapiResponse {

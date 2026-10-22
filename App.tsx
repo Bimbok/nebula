@@ -7,6 +7,7 @@ import Login from './components/Login';
 import VideoGrid from './components/VideoGrid';
 import VideoPlayer from './components/VideoPlayer';
 import ContinueWatching from './components/ContinueWatching';
+import FolderExplorer from './components/FolderExplorer';
 import Loader from './components/Loader';
 import MascotLogo from './components/MascotLogo';
 import { GOOGLE_API_KEY, GOOGLE_CLIENT_ID, SCOPES } from './constants';
@@ -684,6 +685,27 @@ const App: React.FC = () => {
     }
   }, [videos, selectedVideo]);
 
+  const [viewMode, setViewMode] = useState<'library' | 'folders'>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search).get('view');
+      if (p === 'folders') return 'folders';
+    }
+    return 'library';
+  });
+
+  const handleViewModeChange = (mode: 'library' | 'folders') => {
+    setViewMode(mode);
+    try {
+      const url = new URL(window.location.href);
+      if (mode === 'folders') {
+        url.searchParams.set('view', 'folders');
+      } else {
+        url.searchParams.delete('view');
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
+  };
+
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortBy, setSortBy] = useState<'date' | 'name' | 'size'>('date');
   const [filterCategory, setFilterCategory] = useState<'all' | '4k' | '1080p' | 'episodes' | 'movies'>('all');
@@ -816,8 +838,60 @@ const App: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-6">
-            {/* Cinema Command Capsule & Filter Toolbar */}
-            <div className="glass-panel p-3.5 sm:p-4 rounded-3xl space-y-3.5 border border-white/10 shadow-2xl">
+            {/* View Mode Switcher Capsule */}
+            <div className="flex items-center justify-between">
+              <div className="inline-flex items-center p-1 rounded-2xl bg-[#0a0d16]/80 border border-white/[0.08] backdrop-blur-md shadow-lg">
+                <button
+                  onClick={() => handleViewModeChange('library')}
+                  className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 ${
+                    viewMode === 'library'
+                      ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-[0_0_15px_rgba(99,102,241,0.4)] border border-indigo-400/30'
+                      : 'text-gray-400 hover:text-white hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                    <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                    <rect x="14" y="14" width="7" height="7" rx="1.5" />
+                    <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                  </svg>
+                  <span>All Media</span>
+                  <span
+                    className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
+                      viewMode === 'library' ? 'bg-white/20 text-white' : 'bg-white/[0.06] text-gray-400'
+                    }`}
+                  >
+                    {videos.length}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => handleViewModeChange('folders')}
+                  className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-200 ${
+                    viewMode === 'folders'
+                      ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-[0_0_15px_rgba(99,102,241,0.4)] border border-indigo-400/30'
+                      : 'text-gray-400 hover:text-white hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M19.5 21a3 3 0 0 0 3-3v-4.5a3 3 0 0 0-3-3h-1.5V9a3 3 0 0 0-3-3h-3.379a3 3 0 0 1-2.121-.879L8.379 3.879A3 3 0 0 0 6.257 3H4.5A3 3 0 0 0 1.5 6v12a3 3 0 0 0 3 3h15Z" />
+                  </svg>
+                  <span>Folder View</span>
+                </button>
+              </div>
+
+              <div className="hidden sm:flex items-center space-x-2 text-xs font-mono text-gray-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>{viewMode === 'folders' ? 'Google Drive Directory' : 'Smart Library'}</span>
+              </div>
+            </div>
+
+            {viewMode === 'folders' ? (
+              <FolderExplorer onSelectVideo={handleSelectVideo} />
+            ) : (
+              <>
+                {/* Cinema Command Capsule & Filter Toolbar */}
+                <div className="glass-panel p-3.5 sm:p-4 rounded-3xl space-y-3.5 border border-white/10 shadow-2xl">
               {/* Top Row: Search Input, Stats & Sorter */}
               <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
                 {/* Search input capsule */}
@@ -941,6 +1015,8 @@ const App: React.FC = () => {
               <div className="py-10 text-center text-[11px] text-gray-400 font-mono">
                 All {videos.length} videos loaded from your Google Drive
               </div>
+            )}
+              </>
             )}
           </div>
         )}
