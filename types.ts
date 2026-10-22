@@ -21,6 +21,9 @@ export interface GoogleDriveFolder {
   mimeType: string;
   parents?: string[];
   modifiedTime?: string;
+  isSharedDrive?: boolean;
+  isShortcut?: boolean;
+  isSharedWithMe?: boolean;
 }
 
 export interface BreadcrumbItem {

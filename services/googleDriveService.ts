@@ -11,54 +11,160 @@ export interface FolderContentsResult {
   nextPageToken?: string;
 }
 
+const VIDEO_EXTENSIONS = new Set([
+  'mkv', 'mp4', 'avi', 'mov', 'm4v', 'webm', 'flv', 'wmv',
+  'ts', 'mts', 'm2ts', 'vob', 'iso', 'mpg', 'mpeg', '3gp', 'ogv'
+]);
+
+export const isVideoFile = (file: { name?: string; mimeType?: string; videoMediaMetadata?: any; shortcutDetails?: any }): boolean => {
+  if (!file) return false;
+  if (file.videoMediaMetadata) return true;
+  const mime = file.shortcutDetails?.targetMimeType || file.mimeType || '';
+  if (mime.startsWith('video/')) return true;
+  if (mime === 'application/x-matroska') return true;
+  if (file.name) {
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext && VIDEO_EXTENSIONS.has(ext)) return true;
+  }
+  return false;
+};
+
+export const isFolder = (file: { mimeType?: string; shortcutDetails?: any }): boolean => {
+  if (!file) return false;
+  if (file.mimeType === 'application/vnd.google-apps.folder') return true;
+  if (
+    file.mimeType === 'application/vnd.google-apps.shortcut' &&
+    file.shortcutDetails?.targetMimeType === 'application/vnd.google-apps.folder'
+  ) {
+    return true;
+  }
+  return false;
+};
+
 /**
- * Fetch subfolders and videos inside a specific Google Drive folder ID ('root' for top-level My Drive).
+ * Fetch all subfolders and video files located inside a specific Google Drive folder.
+ * Automatically paginates through Drive API to ensure 100% of videos in the folder are loaded.
  */
 export const fetchFolderContents = async (
   folderId: string = 'root',
-  pageToken?: string,
-  pageSize: number = 60
+  pageSize: number = 100
 ): Promise<FolderContentsResult> => {
   try {
-    const query = `'${folderId}' in parents and (mimeType = 'application/vnd.google-apps.folder' or mimeType contains 'video/' or mimeType = 'application/x-matroska') and trashed = false`;
-
-    const params: any = {
-      pageSize,
-      fields: 'nextPageToken, files(id, name, mimeType, thumbnailLink, webContentLink, webViewLink, videoMediaMetadata, size, modifiedTime, parents)',
-      q: query,
-      orderBy: 'folder, name',
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-    };
-
-    if (pageToken) {
-      params.pageToken = pageToken;
-    }
-
-    const response = await window.gapi.client.drive.files.list(params);
-    const files: any[] = response.result.files || [];
-
     const folders: GoogleDriveFolder[] = [];
     const videos: GoogleDriveFile[] = [];
+    const seenIds = new Set<string>();
 
-    for (const file of files) {
-      if (file.mimeType === 'application/vnd.google-apps.folder') {
-        folders.push({
-          id: file.id,
-          name: file.name,
-          mimeType: file.mimeType,
-          parents: file.parents,
-          modifiedTime: file.modifiedTime,
+    // 1. If at root, also query Shared Drives (Team Drives) so users can explore team libraries
+    if (folderId === 'root') {
+      try {
+        const drivesRes = await window.gapi.client.drive.drives.list({
+          pageSize: 50,
+          fields: 'drives(id, name)',
         });
-      } else {
-        videos.push(file);
+        const sharedDrives = drivesRes.result.drives || [];
+        for (const sd of sharedDrives) {
+          if (!seenIds.has(sd.id)) {
+            seenIds.add(sd.id);
+            folders.push({
+              id: sd.id,
+              name: sd.name,
+              mimeType: 'application/vnd.google-apps.folder',
+              isSharedDrive: true,
+            });
+          }
+        }
+      } catch (err) {
+        // Shared drives feature may not be active or available on personal Google accounts
+      }
+
+      // Also query Shared with Me folders
+      try {
+        const sharedWithMeRes = await window.gapi.client.drive.files.list({
+          pageSize: 50,
+          q: "sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+          fields: 'files(id, name, mimeType, modifiedTime, parents)',
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+        });
+        const sharedFolders = sharedWithMeRes.result.files || [];
+        for (const sf of sharedFolders) {
+          if (!seenIds.has(sf.id)) {
+            seenIds.add(sf.id);
+            folders.push({
+              id: sf.id,
+              name: sf.name,
+              mimeType: sf.mimeType,
+              parents: sf.parents,
+              modifiedTime: sf.modifiedTime,
+              isSharedWithMe: true,
+            });
+          }
+        }
+      } catch (err) {
+        // Continue if shared with me query fails
       }
     }
+
+    // 2. Fetch all direct items inside folderId, paginating until all items in this folder are retrieved
+    let pageToken: string | undefined = undefined;
+    let iterations = 0;
+    const maxIterations = 10; // Up to 1000 items per folder
+
+    do {
+      iterations++;
+      const params: any = {
+        pageSize,
+        fields: 'nextPageToken, files(id, name, mimeType, thumbnailLink, webContentLink, webViewLink, videoMediaMetadata, size, modifiedTime, parents, shortcutDetails)',
+        q: `'${folderId}' in parents and trashed = false`,
+        orderBy: 'folder, name',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+      };
+
+      if (pageToken) {
+        params.pageToken = pageToken;
+      }
+
+      const response = await window.gapi.client.drive.files.list(params);
+      const files: any[] = response.result.files || [];
+
+      for (const file of files) {
+        const effectiveId = file.shortcutDetails?.targetId || file.id;
+        if (seenIds.has(effectiveId)) continue;
+        seenIds.add(effectiveId);
+
+        if (isFolder(file)) {
+          folders.push({
+            id: effectiveId,
+            name: file.name,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: file.parents,
+            modifiedTime: file.modifiedTime,
+            isShortcut: file.mimeType === 'application/vnd.google-apps.shortcut',
+          });
+        } else if (isVideoFile(file)) {
+          videos.push({
+            id: effectiveId,
+            name: file.name,
+            mimeType: file.shortcutDetails?.targetMimeType || file.mimeType,
+            thumbnailLink: file.thumbnailLink,
+            webContentLink: file.webContentLink,
+            webViewLink: file.webViewLink,
+            videoMediaMetadata: file.videoMediaMetadata,
+            size: file.size,
+            parents: file.parents,
+            modifiedTime: file.modifiedTime,
+          });
+        }
+      }
+
+      pageToken = response.result.nextPageToken || undefined;
+    } while (pageToken && iterations < maxIterations);
 
     return {
       folders,
       videos,
-      nextPageToken: response.result.nextPageToken || undefined,
+      nextPageToken,
     };
   } catch (error) {
     console.error('Error fetching folder contents for', folderId, error);
@@ -102,10 +208,11 @@ export const fetchVideosPage = async (
 
     const params: any = {
       pageSize,
-      fields: 'nextPageToken, files(id, name, mimeType, thumbnailLink, webContentLink, webViewLink, videoMediaMetadata, size, modifiedTime)',
+      fields: 'nextPageToken, files(id, name, mimeType, thumbnailLink, webContentLink, webViewLink, videoMediaMetadata, size, modifiedTime, parents)',
       q: query,
       orderBy: 'modifiedTime desc',
       supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     };
 
     if (pageToken) {

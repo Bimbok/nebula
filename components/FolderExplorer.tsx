@@ -151,11 +151,34 @@ const FolderExplorer: React.FC<FolderExplorerProps> = ({
     loadFolder(currentFolderId);
   }, [currentFolderId, loadFolder]);
 
+  // Load more items for folders with over 1000 items
+  const handleLoadMore = async () => {
+    if (!nextPageToken || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const res = await fetchFolderContents(currentFolderId);
+      setVideos((prev) => {
+        const seen = new Set(prev.map((v) => v.id));
+        const newUniques = res.videos.filter((v) => !seen.has(v.id));
+        return [...prev, ...newUniques];
+      });
+      setFolders((prev) => {
+        const seen = new Set(prev.map((f) => f.id));
+        const newUniques = res.folders.filter((f) => !seen.has(f.id));
+        return [...prev, ...newUniques];
+      });
+      setNextPageToken(res.nextPageToken);
+    } catch (err) {
+      console.warn('Failed to load more items in folder', err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
   // Handle navigating into a subfolder
   const handleOpenFolder = (folder: GoogleDriveFolder) => {
     setSearchQuery('');
     setBreadcrumbs((prev) => {
-      // Avoid duplicate crumb
       const filtered = prev.filter((b) => b.id !== folder.id);
       return [...filtered, { id: folder.id, name: folder.name }];
     });
@@ -371,7 +394,26 @@ const FolderExplorer: React.FC<FolderExplorerProps> = ({
                         <p className="text-xs sm:text-sm font-semibold text-gray-200 group-hover:text-white truncate" title={folder.name}>
                           {folder.name}
                         </p>
-                        <span className="text-[10px] text-gray-500 font-mono">Folder</span>
+                        <div className="flex items-center space-x-1.5 mt-0.5">
+                          {folder.isSharedDrive && (
+                            <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-cyan-500/20 border border-cyan-500/30 text-cyan-300">
+                              Shared Drive
+                            </span>
+                          )}
+                          {folder.isSharedWithMe && (
+                            <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/20 border border-indigo-500/30 text-indigo-300">
+                              Shared
+                            </span>
+                          )}
+                          {folder.isShortcut && (
+                            <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-500/20 border border-purple-500/30 text-purple-300">
+                              Shortcut
+                            </span>
+                          )}
+                          {!folder.isSharedDrive && !folder.isSharedWithMe && !folder.isShortcut && (
+                            <span className="text-[10px] text-gray-500 font-mono">Folder</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <Icons.ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-indigo-400 group-hover:translate-x-0.5 transition-all shrink-0" />
@@ -394,6 +436,26 @@ const FolderExplorer: React.FC<FolderExplorerProps> = ({
                   <VideoItem key={video.id} video={video} onSelect={onSelectVideo} />
                 ))}
               </div>
+
+              {/* Load More for very large folders (> 1000 items) */}
+              {nextPageToken && (
+                <div className="py-6 flex flex-col items-center justify-center">
+                  <button
+                    onClick={handleLoadMore}
+                    disabled={isLoadingMore}
+                    className="px-6 py-2.5 bg-white/[0.04] hover:bg-white/[0.08] text-gray-300 hover:text-white rounded-xl text-xs font-medium border border-white/[0.08] transition-all duration-200 shadow-sm disabled:opacity-50 flex items-center space-x-2"
+                  >
+                    {isLoadingMore ? (
+                      <>
+                        <Loader size="sm" />
+                        <span>Loading more items...</span>
+                      </>
+                    ) : (
+                      <span>Load More Videos in this Folder</span>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
