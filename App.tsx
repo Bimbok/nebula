@@ -42,8 +42,28 @@ const App: React.FC = () => {
   const [isAuthRestoring, setIsAuthRestoring] = useState<boolean>(hasSavedSession);
   const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
   const [videos, setVideos] = useState<GoogleDriveFile[]>([]);
-  const [selectedVideo, setSelectedVideo] = useState<GoogleDriveFile | null>(null);
-  const [initialResumeTime, setInitialResumeTime] = useState<number | undefined>(undefined);
+  const [selectedVideo, setSelectedVideo] = useState<GoogleDriveFile | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const saved = sessionStorage.getItem('nebula_active_video');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.video?.id) return parsed.video;
+      }
+    } catch {}
+    return null;
+  });
+  const [initialResumeTime, setInitialResumeTime] = useState<number | undefined>(() => {
+    if (typeof window === 'undefined') return undefined;
+    try {
+      const saved = sessionStorage.getItem('nebula_active_video');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed?.resumeTime === 'number') return parsed.resumeTime;
+      }
+    } catch {}
+    return undefined;
+  });
   const [isLoading, setIsLoading] = useState<boolean>(hasSavedSession);
   const [error, setError] = useState<string | null>(null);
   const [isGapiLoaded, setIsGapiLoaded] = useState(false);
@@ -524,7 +544,12 @@ const App: React.FC = () => {
             if (tokenResponse.access_token) {
               persistTokenSession(tokenResponse);
               setIsAuthRestoring(false);
-              await fetchUserVideos();
+              setVideos((prevVideos) => {
+                if (prevVideos.length === 0) {
+                  fetchUserVideos();
+                }
+                return prevVideos;
+              });
             }
           },
         });
@@ -615,18 +640,49 @@ const App: React.FC = () => {
     setVideos([]);
     setSelectedVideo(null);
     setInitialResumeTime(undefined);
+    try {
+      sessionStorage.removeItem('nebula_active_video');
+      const url = new URL(window.location.href);
+      url.searchParams.delete('watch');
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
     setError(null);
   };
 
   const handleSelectVideo = (video: GoogleDriveFile, resumeTime?: number) => {
     setSelectedVideo(video);
     setInitialResumeTime(resumeTime);
+    try {
+      sessionStorage.setItem('nebula_active_video', JSON.stringify({ video, resumeTime }));
+      const url = new URL(window.location.href);
+      url.searchParams.set('watch', video.id);
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
   };
 
   const handleClosePlayer = () => {
     setSelectedVideo(null);
     setInitialResumeTime(undefined);
+    try {
+      sessionStorage.removeItem('nebula_active_video');
+      const url = new URL(window.location.href);
+      url.searchParams.delete('watch');
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
   };
+
+  // Restore active video from URL if videos are loaded and player is not open
+  useEffect(() => {
+    if (!selectedVideo && videos.length > 0 && typeof window !== 'undefined') {
+      const watchId = new URLSearchParams(window.location.search).get('watch');
+      if (watchId) {
+        const found = videos.find((v) => v.id === watchId);
+        if (found) {
+          handleSelectVideo(found);
+        }
+      }
+    }
+  }, [videos, selectedVideo]);
 
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortBy, setSortBy] = useState<'date' | 'name' | 'size'>('date');
@@ -859,10 +915,6 @@ const App: React.FC = () => {
             {!searchQuery.trim() && filterCategory === 'all' && (
               <ContinueWatching onSelectVideo={handleSelectVideo} />
             )}
-
-            <VideoGrid videos={filteredVideos} onSelectVideo={handleSelectVideo} />
-
-            {/* Infinite Scroll / Lazy Load Trigger */}
 
             <VideoGrid videos={filteredVideos} onSelectVideo={handleSelectVideo} />
 

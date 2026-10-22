@@ -430,7 +430,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   const [playbackError, setPlaybackError] = useState<{ message: string; code?: number } | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
   const [bufferedPercent, setBufferedPercent] = useState<number>(0);
-  const prevStreamUrlRef = useRef<string>('');
+  const prevStreamKeyRef = useRef<string>('');
 
   // Volume & Audio State
   const [volume, setVolume] = useState<number>(1);
@@ -545,6 +545,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   }, []);
 
   const token = currentToken;
+  const tokenRef = useRef(token);
+  useEffect(() => {
+    tokenRef.current = currentToken;
+  }, [currentToken]);
+
+  // Stable stream token: captured once at stream mount so background token renewal never mutates video.src
+  const streamTokenRef = useRef(token);
+  if (!streamTokenRef.current && token) {
+    streamTokenRef.current = token;
+  }
 
   // Calculate True Total Duration
   const knownTotalDuration =
@@ -555,7 +565,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
       : 0;
 
   // Stream URL calculation - Smart Auto-Codec direct pass or 320k Studio AAC handled transparently
-  const currentStreamUrl = `/api/stream?fileId=${video.id}&token=${encodeURIComponent(token)}&audioIndex=${selectedAudioIndex}&startTime=${resumeTime}`;
+  const currentStreamUrl = `/api/stream?fileId=${video.id}&token=${encodeURIComponent(streamTokenRef.current || token)}&audioIndex=${selectedAudioIndex}&startTime=${resumeTime}`;
 
   const absoluteStreamUrl = typeof window !== 'undefined' ? `${window.location.origin}${currentStreamUrl}` : currentStreamUrl;
 
@@ -575,6 +585,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         subtitleId: selectedSubtitleId,
       });
       lastSavedTimeRef.current = time;
+      try {
+        sessionStorage.setItem(
+          'nebula_active_video',
+          JSON.stringify({ video, resumeTime: time })
+        );
+      } catch {}
     },
     [video, knownTotalDuration, selectedAudioIndex, selectedSubtitleId, currentTime, resumeTime]
   );
@@ -585,7 +601,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     const probeTracks = async () => {
       setIsProbingTracks(true);
       try {
-        const res = await fetch(`/api/tracks?fileId=${video.id}&token=${encodeURIComponent(token)}`);
+        const authToken = tokenRef.current || token;
+        const res = await fetch(`/api/tracks?fileId=${video.id}&token=${encodeURIComponent(authToken)}`);
         if (!res.ok) throw new Error('Failed to probe media streams');
         const data = await res.json();
         if (!isCancelled) {
@@ -623,7 +640,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
     return () => {
       isCancelled = true;
     };
-  }, [video.id, token]);
+  }, [video.id]);
 
   // 2. Load subtitle cues progressively, but only publish complete WebVTT cue blocks.
   // FFmpeg sends WebVTT in chunks. Parsing an unfinished final line can briefly create
@@ -676,7 +693,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
 
       try {
         const isCustom = matched.isCustom && !!matched.blobUrl;
-        const subUrl = `/api/subtitles?fileId=${video.id}&streamIndex=${matched.streamIndex}&token=${encodeURIComponent(token)}${matched.isBitmap ? '&isBitmap=true' : ''}`;
+        const authToken = tokenRef.current || token;
+        const subUrl = `/api/subtitles?fileId=${video.id}&streamIndex=${matched.streamIndex}&token=${encodeURIComponent(authToken)}${matched.isBitmap ? '&isBitmap=true' : ''}`;
         const res = await fetch(isCustom ? matched.blobUrl! : subUrl, { signal: controller.signal });
         if (!res.ok) throw new Error(`Subtitle HTTP error: ${res.status}`);
 
@@ -732,7 +750,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
 
     void loadSubtitles();
     return () => controller.abort();
-  }, [selectedSubtitleId, subtitleTracks, video.id, token]);
+  }, [selectedSubtitleId, subtitleTracks, video.id]);
 
   // 3. Subtitle presentation engine - hardware video frame presentation + event listeners + heartbeat
   useEffect(() => {
@@ -1227,13 +1245,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
   }, [knownTotalDuration, resumeTime]);
 
   // Seamless stream reload without remounting the video element
+  // Crucial: Only reload the stream when file ID, audio track, or seek resumeTime changes.
+  // Never reload or reset playback when the auth token is refreshed in the background!
   useEffect(() => {
-    if (!prevStreamUrlRef.current) {
-      prevStreamUrlRef.current = currentStreamUrl;
+    const streamKey = `${video.id}_${selectedAudioIndex}_${resumeTime}`;
+    if (!prevStreamKeyRef.current) {
+      prevStreamKeyRef.current = streamKey;
       return;
     }
-    if (prevStreamUrlRef.current !== currentStreamUrl) {
-      prevStreamUrlRef.current = currentStreamUrl;
+    if (prevStreamKeyRef.current !== streamKey) {
+      prevStreamKeyRef.current = streamKey;
       if (videoRef.current) {
         setIsBuffering(true);
         videoRef.current.load();
@@ -1243,7 +1264,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ video, onClose, initialSeekTi
         }
       }
     }
-  }, [currentStreamUrl, isPlaying]);
+  }, [video.id, selectedAudioIndex, resumeTime, isPlaying]);
 
   // Video event handlers
   const handleLoadStart = () => {
